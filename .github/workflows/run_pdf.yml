@@ -1,24 +1,24 @@
-name: Generate PDF
+name: Generate PDF From Google Sheets
 
 on:
+  workflow_dispatch:
   repository_dispatch:
     types: [generate_pdf]
-  workflow_dispatch:
 
 jobs:
-  build:
+  run:
     runs-on: ubuntu-latest
 
     steps:
     - uses: actions/checkout@v4
 
-    - name: Setup Python
-      uses: actions/setup-python@v5
+    - uses: actions/setup-python@v5
       with:
         python-version: "3.11"
 
     - name: Install Dependencies
-      run: pip install -r requirements.txt
+      run: |
+        pip install gspread google-api-python-client google-auth pandas requests reportlab
 
     - name: Run PDF Generator
       env:
@@ -26,8 +26,8 @@ jobs:
         SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
       run: python professional_pdf_generator.py
 
-    - name: Upload PDF Artifact
+    - name: Upload PDF
       uses: actions/upload-artifact@v4
       with:
-        name: ProfessionalCatalog
+        name: catalog_pdf
         path: PROFESSIONAL_CATALOG.pdf
