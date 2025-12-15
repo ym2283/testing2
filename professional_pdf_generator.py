@@ -75,7 +75,27 @@ def detect_shape_from_span(text: str) -> str:
 
     return cleaned
 
-
+def preprocess_size_data(size_text):
+    """Pre-process size data to make it more table-friendly by breaking long lists into 2 lines."""
+    if not size_text:
+        return size_text
+    
+    size_text = str(size_text)
+    
+    # Remove extra spaces
+    size_text = re.sub(r'\s*,\s*', ', ', size_text)
+    
+    # For very long lists, consider breaking into 2 lines
+    if len(size_text) > 25 and ',' in size_text:
+        parts = [p.strip() for p in size_text.split(',')]
+        if len(parts) > 4:
+            # Split into roughly equal parts
+            mid = len(parts) // 2
+            line1 = ', '.join(parts[:mid])
+            line2 = ', '.join(parts[mid:])
+            return f"{line1},\n{line2}"
+    
+    return size_text
 
 def _s(v: Optional[object]) -> str:
     if v is None: return ''
@@ -155,56 +175,85 @@ class EllipsizedTextBox(Flowable):
         return pdfmetrics.stringWidth(s, self.fontName, self.fontSize)
 
     def _wrap_lines(self):
-        # ... keep the existing _wrap_lines method unchanged ...
-        blocks = self.text.split('\n') if self.text else [""]
+        """Improved wrapping that tries to show all content without aggressive truncation."""
+        if not self.text:
+            self.lines = [""]
+            return
+        
+        blocks = self.text.split('\n')
         lines = []
+        
+        # Helper function
         def fits(s): 
             return self._stringWidth(s) <= self.max_w
+        
         for block in blocks:
             words = block.split()
             if not words:
                 if len(lines) < self.max_lines:
                     lines.append("")
-                if len(lines) >= self.max_lines:
-                    break
                 continue
-            cur = ""
-            for w in words:
-                trial = (cur + " " + w).strip() if cur else w
-                if fits(trial):
-                    cur = trial
+                
+            current_line = ""
+            
+            for word in words:
+                test_line = (current_line + " " + word).strip() if current_line else word
+                
+                if fits(test_line):
+                    current_line = test_line
                 else:
-                    if cur:
-                        lines.append(cur)
+                    # Current line is full, add it
+                    if current_line:
+                        lines.append(current_line)
                         if len(lines) >= self.max_lines:
-                            cur = ""
-                            break
-                    if not fits(w):
-                        cut = w
-                        while cut and not fits(cut + "…"):
-                            cut = cut[:-1]
-                        lines.append((cut + "…") if cut else "…")
-                        cur = ""
+                            # We've hit our line limit
+                            # Instead of truncating, see if we can append a little more
+                            if len(lines[-1]) < 30:  # If last line is short
+                                # Try to add part of the word
+                                part = word
+                                while part and not fits(lines[-1] + " " + part + "…"):
+                                    part = part[:-1]
+                                if part:
+                                    lines[-1] = lines[-1] + " " + part + "…"
+                            self.lines = lines
+                            return
+                    
+                    # Start new line with current word
+                    if fits(word):
+                        current_line = word
                     else:
-                        cur = w
-                if len(lines) >= self.max_lines:
-                    cur = ""
-                    break
-            if cur and len(lines) < self.max_lines:
-                lines.append(cur)
+                        # Word is too long for one line - break it
+                        part = word
+                        while part and not fits(part + "…"):
+                            part = part[:-1]
+                        if part:
+                            lines.append(part + "…")
+                        else:
+                            lines.append("…")
+                        
+                        if len(lines) >= self.max_lines:
+                            self.lines = lines
+                            return
+                        current_line = ""
+            
+            # Add the last line of the block
+            if current_line and len(lines) < self.max_lines:
+                lines.append(current_line)
+            
             if len(lines) >= self.max_lines:
                 break
+        
+        # Ensure we don't exceed max_lines
         if len(lines) > self.max_lines:
             lines = lines[:self.max_lines]
-        if lines:
-            last = lines[-1]
-            if not fits(last):
-                while last and not fits(last + "…"):
-                    last = last[:-1]
-                lines[-1] = (last + "…") if last else "…"
-        if lines and lines[-1].endswith("…"):
-            core = lines[-1][:-1].rstrip(" ,;/")
-            lines[-1] = (core + "…") if core else "…"
+            # If we had to cut, indicate with ellipsis on last line
+            if lines[-1] and not lines[-1].endswith("…"):
+                # Try to keep as much as possible
+                while lines[-1] and not fits(lines[-1] + "…"):
+                    lines[-1] = lines[-1][:-1]
+                if lines[-1]:
+                    lines[-1] = lines[-1] + "…"
+        
         self.lines = lines
 
     def wrap(self, availWidth, availHeight):
@@ -280,6 +329,8 @@ class InlineImageText(Flowable):
         self.img.drawOn(self.canv, 0, 0)
         # Draw text beside it
         self.txt.drawOn(self.canv, self.img_width + 2, 0)
+
+
 
 # ----------------------------- main class -----------------------------
 class ProfessionalPDFGenerator:
@@ -636,20 +687,23 @@ class ProfessionalPDFGenerator:
                     m = max(m, sw(r[j], fn_v, fs))
             raw_widths.append(m + pad_pt)
 
-        # --- 2️⃣ Normalize extremely large columns ---
-        max_allowed = max_col_ratio * total_w_pts
-        raw_widths = [min(w, max_allowed) for w in raw_widths]
-
-             
-        # Only detect 'height' header safely.
+        # --- 2️⃣ Special handling for Size and Height columns ---
         for j, h in enumerate(headers):
             header_clean = str(h).strip().lower()
             if header_clean == "height":
-                # Cap Height column width to 130pt (you can adjust 130 → 140)
+                # Cap Height column width to 130pt
                 raw_widths[j] = min(raw_widths[j], 130)
+            # 🔴 FIX: Also cap Size column width to prevent it from dominating
+            elif header_clean == "size":
+                # Cap Size column to reasonable width (30% of total or 100pt max)
+                size_max = min(total_w_pts * 0.30, 100)
+                raw_widths[j] = min(raw_widths[j], size_max)
 
+        # --- 3️⃣ Normalize extremely large columns ---
+        max_allowed = max_col_ratio * total_w_pts
+        raw_widths = [min(w, max_allowed) for w in raw_widths]
 
-        # --- 3️⃣ Calculate total and compression ratio ---
+        # --- 4️⃣ Calculate total and compression ratio ---
         total_raw = sum(raw_widths)
         if total_raw <= total_w_pts:
             # If total is smaller than page width, distribute leftover proportionally
@@ -669,7 +723,7 @@ class ProfessionalPDFGenerator:
                 ratio = 0.7 + 0.6 * min(1.0, w / avg)
                 adj.append(w * compress_factor * ratio)
 
-        # --- 4️⃣ Enforce minimum width & normalize total exactly ---
+        # --- 5️⃣ Enforce minimum width & normalize total exactly ---
         adj = [max(min_pt, w) for w in adj]
         factor = total_w_pts / sum(adj)
         final = [w * factor for w in adj]
@@ -731,17 +785,30 @@ class ProfessionalPDFGenerator:
 
         text_str = self.clean_html_css(text or "")
 
-        # measure width of full text
-        txt_w = pdfmetrics.stringWidth(text_str, style.fontName, style.fontSize)
-        single_line_limit = col_width_pt - 2 * pad_lr_pt
-
-        # If it fits one line → force height = one line
-        if txt_w <= single_line_limit:
+        # 🔴 SMART LINE DETECTION: Auto-calculate needed lines based on content
+        # Count actual newlines already in the text
+        actual_newlines = text_str.count('\n')
+        
+        # Calculate how many lines are needed based on text length and column width
+        avg_chars_per_line = max(1, int((col_width_pt - 2*pad_lr_pt) / (style.fontSize * 0.6)))
+        # Rough estimate: each character is about 60% of font size in width
+        
+        text_length = len(text_str)
+        estimated_lines_needed = max(1, int(text_length / avg_chars_per_line) + 1)
+        
+        # Use whichever is larger: actual newlines or estimated lines
+        lines_needed = max(actual_newlines + 1, estimated_lines_needed)
+        
+        # But respect the max_lines parameter as an upper bound
+        eff_max_lines = min(lines_needed, max_lines)
+        
+        # For key fields (not value fields), we're more restrictive
+        # If this is being called with max_lines=1 (for keys), keep it at 1
+        if max_lines == 1:
             eff_max_lines = 1
-        else:
-            # fallback to old behavior
-            hard_lines = text_str.count("\n") + 1
-            eff_max_lines = max(int(max_lines), hard_lines)
+        elif eff_max_lines < 2 and text_length > avg_chars_per_line:
+            # If text is long but we calculated only 1 line, give it at least 2
+            eff_max_lines = 2
 
         effective_leading = style.leading * 1.15
         fixed_h = max(1, eff_max_lines * effective_leading + 3.5 * pad_tb_pt)
@@ -754,7 +821,7 @@ class ProfessionalPDFGenerator:
             fontName=style.fontName,
             fontSize=style.fontSize,
             max_width_pt=max(1, col_width_pt - 2*pad_lr_pt),
-            max_lines=eff_max_lines,
+            max_lines=eff_max_lines,  # Use calculated max_lines
             leading=style.leading * 1.25,
             align='LEFT',
             v_align='MIDDLE',
@@ -832,7 +899,7 @@ class ProfessionalPDFGenerator:
         key_w = col_w * STANDARD_KEY_RATIO
         val_w = col_w - key_w
 
-        total_lines_budget = max(1, int((row_h - 1) // val_style.leading))
+        total_lines_budget = max(1, int((row_h * 1.5) // val_style.leading))  # 🔴 Increase by 50%
         n = len(rows)
 
         priority_keys = {'specification','specifications','material list','features'}
@@ -849,11 +916,29 @@ class ProfessionalPDFGenerator:
             weights.append(1.6 if lowk in priority_keys else (0.8 if lowk=='item code' else 1.0))
 
         lines = [1] * n
-        budget = max(n, total_lines_budget); remaining = budget - n
+        budget = max(n, total_lines_budget * 2)  # 🔴 DOUBLE the budget for more flexibility
+        remaining = budget - n
+
+        # First pass: Give lines to fields that clearly need them
+        for i in range(n):
+            if desired[i] > 2:  # If a field wants more than 2 lines
+                extra = min(desired[i] - 1, 3)  # Give it up to 3 extra lines
+                lines[i] += min(extra, remaining)
+                remaining -= min(extra, remaining)
+
+        # Second pass: Distribute remaining lines
         while remaining > 0:
             best_i = max(range(n), key=lambda i: ((desired[i]-lines[i]) * weights[i], desired[i], i))
             if desired[best_i] <= lines[best_i]: break
             lines[best_i] += 1; remaining -= 1
+
+        # Ensure minimum lines for certain field types
+        for i, (k, _, _) in enumerate(rows):
+            low_key = k.lower().strip()
+            if low_key in {'size', 'specification', 'description', 'features', 'material'}:
+                lines[i] = max(lines[i], 2)  # At least 2 lines for these
+            if ',' in str(rows[i][1]) and len(str(rows[i][1])) > 20:
+                lines[i] = max(lines[i], 2)  # At least 2 lines for comma-separated lists
 
         table_rows, row_heights = [], []
         for i,(k,_,_) in enumerate(rows):
@@ -875,7 +960,7 @@ class ProfessionalPDFGenerator:
             ('LEFTPADDING',  (0,0), (-1,-1), 0),
             ('RIGHTPADDING', (0,0), (-1,-1), 0),
             ('TOPPADDING',   (0,0), (-1,-1), -5),
-            ('BOTTOMPADDING',(0,0), (-1,-1), 0),
+            ('BOTTOMPADDING',(0,0),(-1,-1), 0),
         ]
         if len(table_rows) > 1:
             ts.insert(0, ('LINEBELOW', (0,0), (-1,-2), 0.5, colors.HexColor('#999999')))
@@ -1009,7 +1094,7 @@ class ProfessionalPDFGenerator:
         total_w = self._content_width_pts()
         left_pad = 23 * mm; gutter = 22 * mm; img_w = 50 * mm
         spec_w   = total_w - (left_pad + img_w + gutter)
-        return self.create_standard_spec_block(product_data, container_h, row_h, img_w, spec_w, detail_limit=9,
+        return self.create_standard_spec_block(product_data, container_h, row_h, img_w, spec_w, detail_limit=10,
                                    gutter=gutter, left_pad=left_pad, img_height_cap=0.85)
 
     def create_product_block_4(self, product_data, container_h, row_h, key_w_override=None):
@@ -1068,8 +1153,8 @@ class ProfessionalPDFGenerator:
             style=[
                 ('TOPPADDING', (0,0), (-1,-1), 8),  
                 ('LEFTPADDING', (0,0), (-1,-1), 0),
-                ('RIGHTPADDING',(0,0), (-1,-1), 0),
-                ('BOTTOMPADDING',(0,0), (-1,-1), 0),
+                ('RIGHTPADDING',(0,0),(-1,-1), 0),
+                ('BOTTOMPADDING',(0,0),(-1,-1), 0),
             ]
         )
 
@@ -1086,9 +1171,9 @@ class ProfessionalPDFGenerator:
         row.setStyle(TableStyle([
             ('VALIGN', (0,0), (-1,-1), 'TOP'),
             ('LEFTPADDING', (0,0), (-1,-1), 0),
-            ('RIGHTPADDING',(0,0), (-1,-1), 0),
+            ('RIGHTPADDING',(0,0),(-1,-1), 0),
             ('TOPPADDING',  (0,0), (-1,-1), 0),
-            ('BOTTOMPADDING',(0,0), (-1,-1), 0),
+            ('BOTTOMPADDING',(0,0),(-1,-1), 0),
         ]))
         elems.append(row)
         return elems
@@ -1111,9 +1196,9 @@ class ProfessionalPDFGenerator:
         item_name_wrapper = Table([[item_name_flow]], colWidths=[total_w_pts])
         item_name_wrapper.setStyle(TableStyle([
             ('LEFTPADDING', (0,0), (-1,-1), 0),
-            ('RIGHTPADDING',(0,0), (-1,-1), 0),
+            ('RIGHTPADDING',(0,0),(-1,-1), 0),
             ('TOPPADDING',  (0,0), (-1,-1), 0),
-            ('BOTTOMPADDING',(0,0), (-1,-1), 0),
+            ('BOTTOMPADDING',(0,0),(-1,-1), 0),
         ]))
         elements.append(item_name_wrapper)
         elements.append(Spacer(1, 10 * mm))
@@ -1192,6 +1277,9 @@ class ProfessionalPDFGenerator:
                         continue
                     if param_label == c:
                         val = _s(res.get(k, ''))
+                        # 🔴 FIX: Pre-process Size column data to break long lists
+                        if c.lower().strip() == 'size':
+                            val = preprocess_size_data(val)
                         break
                 style = self.styles['DetailValBold'] if c.lower().strip() in ('packing','price') else self.styles['DetailVal']
                 row_cells.append(self.safe_paragraph(val, style))
@@ -1382,16 +1470,22 @@ class ProfessionalPDFGenerator:
             story.extend(self.create_full_page_cover(main_cover_url))
 
         prev_category = None
+        first_group = True  # Track if this is the very first group
 
         # Use indexed loop to allow TABLE2 to consume next group
         i = 0
         n = len(groups)
         while i < n:
             g = groups[i]
+        
             fmt = _norm(g['format'])
             sub = g['subcategory'] or ''
             cat = _s(g['category']).upper()
 
+            # ONLY add page break when changing categories (not for first group after cover)
+            if not first_group and cat != prev_category:
+                story.append(PageBreak())
+        
             cover_added = False
             if cat != prev_category:
                 cover_url = remark_lookup.get(cat)
@@ -1400,7 +1494,9 @@ class ProfessionalPDFGenerator:
                     cover_added = True
                 prev_category = cat
 
-            if story and not cover_added:
+            # If we added a category cover, we're already on a new page
+            # Otherwise, only add page break if this isn't the first group
+            if story and not cover_added and not first_group:
                 story.append(PageBreak())
 
             items = g['rows']
@@ -1412,6 +1508,7 @@ class ProfessionalPDFGenerator:
                 story.append(Spacer(1, _mm(self._header_band_mm - 11.5)))
                 story.extend(self.create_table_format(items))
                 i += 1
+                first_group = False
                 continue
 
             # TABLE2 (two Group-ID tables per page: top + bottom)
@@ -1419,7 +1516,7 @@ class ProfessionalPDFGenerator:
                 story.append(SetSubcategoryForFooter(sub))
                 story.extend(self.create_subcategory_header(sub))
                 story.append(Spacer(1, _mm(self._header_band_mm - 11.5)))
-    
+
                 def _same_section(g1, g2):
                     return (
                         _norm(g2['format']) == 'TABLE2' and
@@ -1438,6 +1535,7 @@ class ProfessionalPDFGenerator:
                     used = 2
 
                 i += used
+                first_group = False
                 continue
 
             # 1WP (one per page)
@@ -1450,9 +1548,10 @@ class ProfessionalPDFGenerator:
                     story.append(Spacer(1, _mm(self._header_band_mm - 12)))
                     story.extend(self.create_1wp_format(prod))
                 i += 1
+                first_group = False
                 continue  
 
-            # Formats 2/3/4 with GroupID-aware pagination - FIXED VERSION
+            # Formats 2/3/4 with GroupID-aware pagination
             if fmt in ('2','3','4'):
                 per_page = {'2':2, '3':3, '4':4}[fmt]
                 desired_gap = {'2':15, '3':12, '4':2}[fmt]
@@ -1463,11 +1562,11 @@ class ProfessionalPDFGenerator:
 
                 # Process each page
                 for page_idx, page_items in enumerate(pages):
-                    # always start each new page cleanly
+                    # only start new page if not the first page of this section
                     if page_idx > 0:
                         story.append(PageBreak())
 
-                    # 🔥 FIX: Add subcategory header on EVERY page for multi-page subcategories
+                    # Add subcategory header on EVERY page for multi-page subcategories
                     story.append(SetSubcategoryForFooter(sub))
                     header_blocks = self.create_subcategory_header(sub)
                     if header_blocks:
@@ -1484,8 +1583,9 @@ class ProfessionalPDFGenerator:
                             story.extend(self.create_product_block_3(prod, cont_h, row_h))
                         elif fmt == '4':
                             story.extend(self.create_product_block_4(prod, cont_h, row_h))
-        
+    
                 i += 1
+                first_group = False
                 continue
 
             # Fallback treat as format 2
@@ -1498,7 +1598,6 @@ class ProfessionalPDFGenerator:
             for page_idx, page_items in enumerate(pages):
                 if page_idx > 0:
                     story.append(PageBreak())
-                # 🔥 FIX: Add subcategory header on EVERY page for multi-page subcategories
                 story.append(SetSubcategoryForFooter(sub))
                 story.extend(self.create_subcategory_header(sub))
                 story.append(Spacer(1, _mm(self._header_band_mm - 12)))
@@ -1507,6 +1606,7 @@ class ProfessionalPDFGenerator:
                         story.append(Spacer(1, _mm(inter_gap_mm)))
                     story.extend(self.create_format_2_layout(prod, cont_h, row_h))
             i += 1
+            first_group = False
 
         doc.build(story, canvasmaker=lambda *a, **k: FooterCanvas(*a, **k, generator=self, raw_data=base_raw, doc_ref=doc))        
         return output_path
