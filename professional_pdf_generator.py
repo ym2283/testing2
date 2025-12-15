@@ -837,25 +837,49 @@ class ProfessionalPDFGenerator:
         return cell, fixed_h
 
     # ---------- spec block ----------
-    def build_specifications_card(self, raw_data, resolved_data, detail_limit, col_w, row_h, key_w_override=None):
+    def build_specifications_card(
+        self,
+        raw_data,
+        resolved_data,
+        detail_limit,
+        col_w,
+        row_h,
+        key_w_override=None
+    ):
         from math import ceil
+        from reportlab.platypus import Table, TableStyle, Paragraph
+        from reportlab.lib.styles import ParagraphStyle
+        from reportlab.lib import colors
+        from reportlab.pdfbase import pdfmetrics
+
         sw = pdfmetrics.stringWidth
+
         key_style = self.styles['DetailKey']
         val_style = self.styles['DetailVal']
         val_bold  = self.styles['DetailValBold']
         val_red   = self.styles['DetailValRedBold']
 
+        # 🔴 ALL multiline fields must use Paragraph (never EllipsizedTextBox)
+        MULTILINE_KEYS = {
+            'size',
+            'package include',
+            'package includes',
+            'specification',
+            'specifications',
+            'features',
+            'description',
+            'material list'
+        }
+
         rows = []
+
+        # ----- Item Code (red) -----
         item_code = _s(resolved_data.get('Item Code') or resolved_data.get('Code'))
-        if item_code: 
-            # Create a red style on the fly
+        if item_code:
             red_style = ParagraphStyle(
                 'ItemCodeRed',
-                parent=self.styles['DetailValBold'],
-                textColor=colors.red,
-                fontName=self.styles['DetailValBold'].fontName,
-                fontSize=11,
-                leading=11.0
+                parent=val_bold,
+                textColor=colors.red
             )
             rows.append(('Item Code', item_code, red_style))
 
@@ -863,118 +887,142 @@ class ProfessionalPDFGenerator:
 
         _skip_dim_weight = item_code in self._exclude_dim_weight_skus
 
+
+        # ----- Collect parameters -----
         for i in range(1, 21):
             k = f'Parameter{i}'
             key_label = _s(raw_data.get(k, ''))
-            raw_val = resolved_data.get(k, '')
+            raw_val   = resolved_data.get(k, '')
+
             if not key_label or not raw_val:
                 continue
 
-            # Use PNG icon conversion instead of Unicode symbols
-            val = detect_shape_from_span(raw_val)  # This will now return PNG icons
-        
-            # Continue with normal cleaning
+            val = detect_shape_from_span(raw_val)
             val = self.clean_html_css(val)
-
 
             low = key_label.lower().strip()
 
             if _skip_dim_weight and low in ('weight', 'packing dimension'):
                 continue
 
-            if low == 'packing': exact_packing.append((key_label, val, val_bold))
-            elif low == 'price': exact_price.append((key_label, val, val_bold))
-            else: others.append((key_label, val, val_style))
+            if low == 'packing':
+                exact_packing.append((key_label, val, val_bold))
+            elif low == 'price':
+                exact_price.append((key_label, val, val_bold))
+            else:
+                others.append((key_label, val, val_style))
 
         rows.extend(others + exact_packing + exact_price)
-        if detail_limit: rows = rows[:detail_limit]
-        if not rows: rows = [("—", "—", val_style)]
 
-        pad_pt = 6
-        max_key_pt = 0
-        for k, _, _ in rows:
-            max_key_pt = max(max_key_pt, sw(str(k), key_style.fontName, key_style.fontSize))
+        if detail_limit:
+            rows = rows[:detail_limit]
 
-        STANDARD_KEY_RATIO = 0.40   # 28% of total width for key column
+        if not rows:
+            rows = [("—", "—", val_style)]
+
+        # ----- Column widths -----
+        STANDARD_KEY_RATIO = 0.40
         key_w = col_w * STANDARD_KEY_RATIO
         val_w = col_w - key_w
 
-        total_lines_budget = max(1, int((row_h * 1.5) // val_style.leading))  # 🔴 Increase by 50%
-        n = len(rows)
+        # ----- Build table rows -----
+        table_rows = []
+        row_heights = []
 
-        priority_keys = {'specification','specifications','material list','features'}
-        if _skip_dim_weight:
-            priority_keys.add('size')
+        for key, val, style in rows:
+            lowk = key.lower().strip()
 
-        desired, weights = [], []
-        avail_val_text_w = max(1, val_w - pad_pt)
-        for k, v, st in rows:
-            txt_w = sw(self.clean_html_css(v or ""), st.fontName, st.fontSize)
-            est = max(1, int(ceil(txt_w / (avail_val_text_w * 0.95))))
-            desired.append(est)
-            lowk = k.lower().strip()
-            weights.append(1.6 if lowk in priority_keys else (0.8 if lowk=='item code' else 1.0))
+            # --- Key cell (always clipped) ---
+            key_cell, h1 = self._clip_cell(
+                key,
+                key_style,
+                key_w,
+                max_lines=2,
+                pad_lr_pt=3,
+                pad_tb_pt=0
+            )
 
-        lines = [1] * n
-        budget = max(n, total_lines_budget * 2)  # 🔴 DOUBLE the budget for more flexibility
-        remaining = budget - n
+            # --- Value cell ---
+            if lowk in MULTILINE_KEYS:
+                # 🔥 REAL wrapping paragraph (NO clipping)
+                effective_leading = style.leading * 1.25
 
-        # First pass: Give lines to fields that clearly need them
-        for i in range(n):
-            if desired[i] > 2:  # If a field wants more than 2 lines
-                extra = min(desired[i] - 1, 3)  # Give it up to 3 extra lines
-                lines[i] += min(extra, remaining)
-                remaining -= min(extra, remaining)
+                p = Paragraph(
+                    self.clean_html_css(val).replace('\n', '<br/>'),
+                    ParagraphStyle(
+                        f'{lowk}_value',
+                        parent=style,
+                        leading=effective_leading,
+                        wordWrap='LTR',
+                        spaceBefore=0,
+                        spaceAfter=0
+                    )
+                )
 
-        # Second pass: Distribute remaining lines
-        while remaining > 0:
-            best_i = max(range(n), key=lambda i: ((desired[i]-lines[i]) * weights[i], desired[i], i))
-            if desired[best_i] <= lines[best_i]: break
-            lines[best_i] += 1; remaining -= 1
+                pad_tb = 3
+                pw, ph = p.wrap(val_w - 10, row_h)
 
-        # Ensure minimum lines for certain field types
-        for i, (k, _, _) in enumerate(rows):
-            low_key = k.lower().strip()
-            if low_key in {'size', 'specification', 'description', 'features', 'material'}:
-                lines[i] = max(lines[i], 2)  # At least 2 lines for these
-            if ',' in str(rows[i][1]) and len(str(rows[i][1])) > 20:
-                lines[i] = max(lines[i], 2)  # At least 2 lines for comma-separated lists
+                val_cell = PaddedBox(
+                    width=val_w,
+                    height=ph + pad_tb * 2,
+                    child=p,
+                    pad_l=5,
+                    pad_r=5,
+                    pad_t=pad_tb,
+                    pad_b=pad_tb,
+                    valign='MIDDLE'
+                )
 
-        table_rows, row_heights = [], []
-        for i,(k,_,_) in enumerate(rows):
-            low_key = k.lower().strip()
-            cap = 12 if (_skip_dim_weight and low_key == 'size') else (8 if low_key in priority_keys else 5)
-            lines[i] = min(lines[i], cap)
+                h2 = ph + pad_tb * 2
 
-        for (k, v, st), ml in zip(rows, lines):
-            cleaned_v = self.clean_html_css(v or "")
-            if '\n' in cleaned_v: ml = max(2, ml)
-            key_cell, h1 = self._clip_cell(k, key_style, key_w, max_lines=2, pad_lr_pt=3, pad_tb_pt=0)
-            val_cell, h2 = self._clip_cell(v, st, val_w, max_lines=ml, pad_lr_pt=5, pad_tb_pt=3, valign='MIDDLE')
+            else:
+                # 🔒 Single-line or short fields → clipped
+                val_cell, h2 = self._clip_cell(
+                    val,
+                    style,
+                    val_w,
+                    max_lines=1 if lowk == 'item code' else 5,
+                    pad_lr_pt=5,
+                    pad_tb_pt=3,
+                    valign='MIDDLE'
+                )
+
             rh = max(h1, h2)
-            table_rows.append([key_cell, val_cell]); row_heights.append(rh)
+            table_rows.append([key_cell, val_cell])
+            row_heights.append(rh)
 
-        inner = Table(table_rows, colWidths=[key_w, val_w], rowHeights=row_heights)
+        # ----- Inner table -----
+        inner = Table(
+            table_rows,
+            colWidths=[key_w, val_w],
+            rowHeights=row_heights
+        )
+
         ts = [
-            ('VALIGN',       (0,0), (-1,-1), 'MIDDLE'),
-            ('LEFTPADDING',  (0,0), (-1,-1), 0),
-            ('RIGHTPADDING', (0,0), (-1,-1), 0),
-            ('TOPPADDING',   (0,0), (-1,-1), -5),
-            ('BOTTOMPADDING',(0,0),(-1,-1), 0),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('LEFTPADDING', (0, 0), (-1, -1), 0),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+            ('TOPPADDING', (0, 0), (-1, -1), -5),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
         ]
+
         if len(table_rows) > 1:
-            ts.insert(0, ('LINEBELOW', (0,0), (-1,-2), 0.5, colors.HexColor('#999999')))
+            ts.insert(0, ('LINEBELOW', (0, 0), (-1, -2), 0.5, colors.HexColor('#999999')))
+
         inner.setStyle(TableStyle(ts))
 
+        # ----- Outer wrapper -----
         outer = Table([[inner]], colWidths=[col_w])
         outer.setStyle(TableStyle([
-            ('LEFTPADDING', (0,0), (-1,-1), 0),
-            ('RIGHTPADDING',(0,0), (-1,-1), 0),
-            ('TOPPADDING',  (0,0), (-1,-1), 0),
-            ('BOTTOMPADDING',(0,0), (-1,-1), 0),
-            ('VALIGN', (0,0), (-1,-1), 'TOP'),
+            ('LEFTPADDING', (0, 0), (-1, -1), 0),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+            ('TOPPADDING', (0, 0), (-1, -1), 0),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
         ]))
+
         return outer
+
 
     # ---------- product block for 2/3/4 ----------
     def _product_block(self, product_data, container_h, row_h, img_w, spec_w, detail_limit,
