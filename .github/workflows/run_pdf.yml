@@ -10,9 +10,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
+    - name: Checkout repo
+      uses: actions/checkout@v4
 
-    - uses: actions/setup-python@v5
+    - name: Setup Python
+      uses: actions/setup-python@v5
       with:
         python-version: "3.11"
 
@@ -26,8 +28,12 @@ jobs:
         SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
       run: python professional_pdf_generator.py
 
-    - name: Upload PDF
-      uses: actions/upload-artifact@v4
+    # ✅ Upload PDF directly to GitHub Release
+    - name: Upload PDF to GitHub Release
+      uses: softprops/action-gh-release@v2
       with:
-        name: catalog_pdf
-        path: PROFESSIONAL_CATALOG.pdf
+        tag_name: latest
+        name: Latest Catalog PDF
+        files: PROFESSIONAL_CATALOG.pdf
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
