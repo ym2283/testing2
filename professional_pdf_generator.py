@@ -33,6 +33,8 @@ from reportlab.platypus import Paragraph
 from reportlab.lib.styles import ParagraphStyle
 import re, html
 from googleapiclient.http import MediaFileUpload
+from reportlab.pdfbase import pdfmetrics
+
 # ---------- helpers ----------
 def _mm(v): return v * mm
 PAGE_W_MM, PAGE_H_MM = 210, 297
@@ -206,30 +208,26 @@ class EllipsizedTextBox(Flowable):
                     if current_line:
                         lines.append(current_line)
                         if len(lines) >= self.max_lines:
-                            # We've hit our line limit
-                            # Instead of truncating, see if we can append a little more
-                            if len(lines[-1]) < 30:  # If last line is short
-                                # Try to add part of the word
-                                part = word
-                                while part and not fits(lines[-1] + " " + part + "…"):
-                                    part = part[:-1]
-                                if part:
-                                    lines[-1] = lines[-1] + " " + part + "…"
-                            self.lines = lines
+                            self.lines = lines[:self.max_lines]
                             return
+
                     
                     # Start new line with current word
                     if fits(word):
                         current_line = word
                     else:
-                        # Word is too long for one line - break it
+                        # Hard-break long word WITHOUT ellipsis
                         part = word
-                        while part and not fits(part + "…"):
+                        while part and not fits(part):
                             part = part[:-1]
                         if part:
-                            lines.append(part + "…")
+                            lines.append(part)
+                            remainder = word[len(part):]
+                            if remainder:
+                                words.insert(0, remainder)
                         else:
-                            lines.append("…")
+                            lines.append(word[:1])
+
                         
                         if len(lines) >= self.max_lines:
                             self.lines = lines
@@ -244,15 +242,11 @@ class EllipsizedTextBox(Flowable):
                 break
         
         # Ensure we don't exceed max_lines
-        if len(lines) > self.max_lines:
-            lines = lines[:self.max_lines]
-            # If we had to cut, indicate with ellipsis on last line
-            if lines[-1] and not lines[-1].endswith("…"):
-                # Try to keep as much as possible
-                while lines[-1] and not fits(lines[-1] + "…"):
-                    lines[-1] = lines[-1][:-1]
+        
                 if lines[-1]:
-                    lines[-1] = lines[-1] + "…"
+                    if len(lines) >= self.max_lines:
+                        self.lines = lines[:self.max_lines]
+                        return
         
         self.lines = lines
 
@@ -389,7 +383,7 @@ class ProfessionalPDFGenerator:
         paths = {
             'Avenir-Black': "/workspaces/testing2/Avenir-Black.ttf",
             'Avenir-Book':  "/workspaces/testing2/Avenir-Book.ttf"
-        }
+        } 
         for fam, p in paths.items():
             if os.path.exists(p):
                 try:
@@ -786,30 +780,12 @@ class ProfessionalPDFGenerator:
         text_str = self.clean_html_css(text or "")
 
         # 🔴 SMART LINE DETECTION: Auto-calculate needed lines based on content
-        # Count actual newlines already in the text
-        actual_newlines = text_str.count('\n')
-        
-        # Calculate how many lines are needed based on text length and column width
-        avg_chars_per_line = max(1, int((col_width_pt - 2*pad_lr_pt) / (style.fontSize * 0.6)))
-        # Rough estimate: each character is about 60% of font size in width
-        
-        text_length = len(text_str)
-        estimated_lines_needed = max(1, int(text_length / avg_chars_per_line) + 1)
-        
-        # Use whichever is larger: actual newlines or estimated lines
-        lines_needed = max(actual_newlines + 1, estimated_lines_needed)
-        
-        # But respect the max_lines parameter as an upper bound
-        eff_max_lines = min(lines_needed, max_lines)
-        
-        # For key fields (not value fields), we're more restrictive
-        # If this is being called with max_lines=1 (for keys), keep it at 1
-        if max_lines == 1:
-            eff_max_lines = 1
-        elif eff_max_lines < 2 and text_length > avg_chars_per_line:
-            # If text is long but we calculated only 1 line, give it at least 2
-            eff_max_lines = 2
+        # ✅ FIX: determine lines ONLY by real breaks, not estimation
+        actual_lines = max(1, text_str.count('\n') + 1)
 
+        # respect max_lines if caller restricts it
+        eff_max_lines = min(actual_lines, max_lines)
+        
         effective_leading = style.leading * 1.15
         fixed_h = max(1, eff_max_lines * effective_leading + 3.5 * pad_tb_pt)
     
@@ -837,62 +813,71 @@ class ProfessionalPDFGenerator:
         return cell, fixed_h
 
     # ---------- spec block ----------
-    def build_specifications_card(
-        self,
-        raw_data,
-        resolved_data,
-        detail_limit,
-        col_w,
-        row_h,
-        key_w_override=None
-    ):
+    def build_specifications_card(self, raw_data, resolved_data, detail_limit, col_w, row_h, key_w_override=None):
         from math import ceil
-        from reportlab.platypus import Table, TableStyle, Paragraph
-        from reportlab.lib.styles import ParagraphStyle
         from reportlab.lib import colors
+        from reportlab.lib.styles import ParagraphStyle
         from reportlab.pdfbase import pdfmetrics
 
         sw = pdfmetrics.stringWidth
 
+        # =========================================================
+        # CATEGORY-SPECIFIC FONT OVERRIDE
+        # =========================================================
+        category = _s(raw_data.get('Category')).upper()
+        is_professional_combo = category == 'PROFESSIONAL COMBO KIT'
+
+        # Base styles (default = fontSize 11)
         key_style = self.styles['DetailKey']
         val_style = self.styles['DetailVal']
         val_bold  = self.styles['DetailValBold']
         val_red   = self.styles['DetailValRedBold']
 
-        # 🔴 ALL multiline fields must use Paragraph (never EllipsizedTextBox)
-        MULTILINE_KEYS = {
-            'size',
-            'package include',
-            'package includes',
-            'specification',
-            'specifications',
-            'features',
-            'description',
-            'material list'
-        }
-
-        rows = []
-
-        # ----- Item Code (red) -----
-        item_code = _s(resolved_data.get('Item Code') or resolved_data.get('Code'))
-        if item_code:
-            red_style = ParagraphStyle(
-                'ItemCodeRed',
+        # Override to fontSize = 10 ONLY for PROFESSIONAL COMBO KIT
+        if is_professional_combo:
+            key_style = ParagraphStyle(
+                name='DetailKey_PC',
+                parent=key_style,
+                fontSize=9,
+                leading=10.5
+            )
+            val_style = ParagraphStyle(
+                name='DetailVal_PC',
+                parent=val_style,
+                fontSize=9,
+                leading=10.5
+            )
+            val_bold = ParagraphStyle(
+                name='DetailValBold_PC',
                 parent=val_bold,
+                fontSize=10,
+                leading=10.5
+            )
+            val_red = ParagraphStyle(
+                name='DetailValRedBold_PC',
+                parent=val_red,
+                fontSize=10,
+                leading=10.5,
                 textColor=colors.red
             )
-            rows.append(('Item Code', item_code, red_style))
+
+        # =========================================================
+        # BUILD ROW DATA
+        # =========================================================
+        rows = []
+
+        item_code = _s(resolved_data.get('Item Code') or resolved_data.get('Code'))
+        if item_code:
+            rows.append(('Item Code', item_code, val_red))
 
         exact_packing, exact_price, others = [], [], []
 
         _skip_dim_weight = item_code in self._exclude_dim_weight_skus
 
-
-        # ----- Collect parameters -----
         for i in range(1, 21):
             k = f'Parameter{i}'
             key_label = _s(raw_data.get(k, ''))
-            raw_val   = resolved_data.get(k, '')
+            raw_val = resolved_data.get(k, '')
 
             if not key_label or not raw_val:
                 continue
@@ -918,107 +903,128 @@ class ProfessionalPDFGenerator:
             rows = rows[:detail_limit]
 
         if not rows:
-            rows = [("—", "—", val_style)]
+            rows = [('—', '—', val_style)]
 
-        # ----- Column widths -----
+        # =========================================================
+        # COLUMN WIDTHS
+        # =========================================================
+        pad_pt = 6
         STANDARD_KEY_RATIO = 0.40
+
         key_w = col_w * STANDARD_KEY_RATIO
         val_w = col_w - key_w
 
-        # ----- Build table rows -----
+        # =========================================================
+        # LINE ALLOCATION LOGIC (UNCHANGED, SAFE)
+        # =========================================================
+        total_lines_budget = max(1, int((row_h * 1.5) // val_style.leading))
+        n = len(rows)
+
+        desired, weights = [], []
+        avail_val_text_w = max(1, val_w - pad_pt)
+
+        for k, v, st in rows:
+            txt_w = sw(self.clean_html_css(v or ""), st.fontName, st.fontSize)
+            est = max(1, int(ceil(txt_w / (avail_val_text_w * 0.95))))
+            desired.append(est)
+
+            lowk = k.lower().strip()
+            if lowk in {'specification', 'specifications', 'features', 'material', 'size'}:
+                weights.append(1.6)
+            elif lowk == 'item code':
+                weights.append(0.8)
+            else:
+                weights.append(1.0)
+
+        lines = [1] * n
+        budget = max(n, total_lines_budget * 2)
+        remaining = budget - n
+
+        for i in range(n):
+            if desired[i] > 2:
+                extra = min(desired[i] - 1, 3)
+                give = min(extra, remaining)
+                lines[i] += give
+                remaining -= give
+
+        while remaining > 0:
+            best_i = max(
+                range(n),
+                key=lambda i: ((desired[i] - lines[i]) * weights[i], desired[i])
+            )
+            if desired[best_i] <= lines[best_i]:
+                break
+            lines[best_i] += 1
+            remaining -= 1
+
+        # =========================================================
+        # BUILD TABLE
+        # =========================================================
         table_rows = []
         row_heights = []
 
-        for key, val, style in rows:
-            lowk = key.lower().strip()
+        for (k, v, st), ml in zip(rows, lines):
+            cleaned_v = self.clean_html_css(v or "")
 
-            # --- Key cell (always clipped) ---
+            # Force single-line if it fits
+            if (
+                '\n' not in cleaned_v and
+                pdfmetrics.stringWidth(cleaned_v, st.fontName, st.fontSize) <= (val_w - 10)
+            ):
+                ml = 1
+
+            # 🔥 FIX: Keys that fit in one line must stay one line
+            key_text = self.clean_html_css(k)
+            key_width = pdfmetrics.stringWidth(
+                key_text,
+                key_style.fontName,
+                key_style.fontSize
+            )
+
+            key_max_lines = 1 if key_width <= (key_w - 6) else 2
+
             key_cell, h1 = self._clip_cell(
-                key,
-                key_style,
-                key_w,
-                max_lines=2,
+                k, key_style, key_w,
+                max_lines=key_max_lines,
                 pad_lr_pt=3,
                 pad_tb_pt=0
             )
 
-            # --- Value cell ---
-            if lowk in MULTILINE_KEYS:
-                # 🔥 REAL wrapping paragraph (NO clipping)
-                effective_leading = style.leading * 1.25
 
-                p = Paragraph(
-                    self.clean_html_css(val).replace('\n', '<br/>'),
-                    ParagraphStyle(
-                        f'{lowk}_value',
-                        parent=style,
-                        leading=effective_leading,
-                        wordWrap='LTR',
-                        spaceBefore=0,
-                        spaceAfter=0
-                    )
-                )
-
-                pad_tb = 3
-                pw, ph = p.wrap(val_w - 10, row_h)
-
-                val_cell = PaddedBox(
-                    width=val_w,
-                    height=ph + pad_tb * 2,
-                    child=p,
-                    pad_l=5,
-                    pad_r=5,
-                    pad_t=pad_tb,
-                    pad_b=pad_tb,
-                    valign='MIDDLE'
-                )
-
-                h2 = ph + pad_tb * 2
-
-            else:
-                # 🔒 Single-line or short fields → clipped
-                val_cell, h2 = self._clip_cell(
-                    val,
-                    style,
-                    val_w,
-                    max_lines=1 if lowk == 'item code' else 5,
-                    pad_lr_pt=5,
-                    pad_tb_pt=3,
-                    valign='MIDDLE'
-                )
+            val_cell, h2 = self._clip_cell(
+                v, st, val_w,
+                max_lines=9999,
+                pad_lr_pt=5,
+                pad_tb_pt=3,
+                valign='MIDDLE'
+            )
 
             rh = max(h1, h2)
             table_rows.append([key_cell, val_cell])
             row_heights.append(rh)
 
-        # ----- Inner table -----
         inner = Table(
             table_rows,
             colWidths=[key_w, val_w],
             rowHeights=row_heights
         )
 
-        ts = [
-            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-            ('LEFTPADDING', (0, 0), (-1, -1), 0),
-            ('RIGHTPADDING', (0, 0), (-1, -1), 0),
-            ('TOPPADDING', (0, 0), (-1, -1), -5),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
-        ]
+        inner.setStyle(TableStyle([
+            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+            ('LEFTPADDING', (0,0), (-1,-1), 0),
+            ('RIGHTPADDING', (0,0), (-1,-1), 0),
+            ('TOPPADDING', (0,0), (-1,-1), -5),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 0),
+            ('LINEBELOW', (0,0), (-1,-2), 0.5, colors.HexColor('#999999')),
+        ]))
 
-        if len(table_rows) > 1:
-            ts.insert(0, ('LINEBELOW', (0, 0), (-1, -2), 0.5, colors.HexColor('#999999')))
-
-        inner.setStyle(TableStyle(ts))
-
-        # ----- Outer wrapper -----
         outer = Table([[inner]], colWidths=[col_w])
         outer.setStyle(TableStyle([
-            ('LEFTPADDING', (0, 0), (-1, -1), 0),
-            ('RIGHTPADDING', (0, 0), (-1, -1), 0),
-            ('TOPPADDING', (0, 0), (-1, -1), 0),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
-            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('LEFTPADDING', (0,0), (-1,-1), 0),
+            ('RIGHTPADDING', (0,0), (-1,-1), 0),
+            ('TOPPADDING', (0,0), (-1,-1), 0),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 0),
+            ('VALIGN', (0,0), (-1,-1), 'TOP'),
         ]))
 
         return outer
@@ -1254,7 +1260,7 @@ class ProfessionalPDFGenerator:
         # Header image (top banner)
         header_img_url  = self.get_best_image(imgs0)
         header_img_path = self.download_image(header_img_url) if header_img_url else None
-        header_img_h = 60 * mm
+        header_img_h = 48 * mm
         elements.append(self.create_safe_image_box(header_img_path, total_w_pts, header_img_h, height_cap=1.0, empty_placeholder=True))
         elements.append(Spacer(1, 10 * mm))
 
