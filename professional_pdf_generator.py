@@ -380,12 +380,10 @@ class ProfessionalPDFGenerator:
 
     def setup_custom_fonts(self):
         self.fonts_available = {'Avenir-Black': False, 'Avenir-Book': False}
-        BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
         paths = {
-            'Avenir-Black': os.path.join(BASE_DIR, "Avenir-Black.ttf"),
-            'Avenir-Book':  os.path.join(BASE_DIR, "Avenir-Book.ttf"),
-        }
+            'Avenir-Black': "/workspaces/testing2/Avenir-Black.ttf",
+            'Avenir-Book':  "/workspaces/testing2/Avenir-Book.ttf"
+        } 
         for fam, p in paths.items():
             if os.path.exists(p):
                 try:
