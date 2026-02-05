@@ -781,17 +781,35 @@ class ProfessionalPDFGenerator:
 
         # 🔴 SMART LINE DETECTION: Auto-calculate needed lines based on content
         # ✅ FIX: determine lines ONLY by real breaks, not estimation
-        actual_lines = max(1, text_str.count('\n') + 1)
+        # --------------------------------------------------
+        # ✅ FINAL FIX: determine height from REAL wrapped lines
+        # --------------------------------------------------
 
-        # respect max_lines if caller restricts it
-        eff_max_lines = min(actual_lines, max_lines)
-        
-        effective_leading = style.leading * 1.15
+        # Create temp wrapper to measure real wrapping
+        _measure = EllipsizedTextBox(
+            text=text_str,
+            fontName=style.fontName,
+            fontSize=style.fontSize,
+            max_width_pt=max(1, col_width_pt - 2*pad_lr_pt),
+            max_lines=max_lines,
+            leading=style.leading * 1.25,
+            align='LEFT',
+            v_align='MIDDLE'
+        )
+
+        # Force wrap calculation
+        _measure._wrap_lines()
+
+        real_lines = max(1, len(_measure.lines))
+        eff_max_lines = min(real_lines, max_lines)
+
+        # 🔴 FIXED: Use consistent leading multiplier (1.25) for both height calculation and text rendering
+        effective_leading = style.leading * 1.25  # Changed from 1.15 to 1.25 to match the inner box
         fixed_h = max(1, eff_max_lines * effective_leading + 3.5 * pad_tb_pt)
-    
+
         # Check if this is an Item Code that should be red
         text_color = getattr(style, 'textColor', colors.black)
-    
+
         inner = EllipsizedTextBox(
             text=text_str,
             fontName=style.fontName,
@@ -838,25 +856,25 @@ class ProfessionalPDFGenerator:
             key_style = ParagraphStyle(
                 name='DetailKey_PC',
                 parent=key_style,
-                fontSize=9,
+                fontSize=8.5,
                 leading=10.5
             )
             val_style = ParagraphStyle(
                 name='DetailVal_PC',
                 parent=val_style,
-                fontSize=9,
+                fontSize=8.5,
                 leading=10.5
             )
             val_bold = ParagraphStyle(
                 name='DetailValBold_PC',
                 parent=val_bold,
-                fontSize=10,
+                fontSize=8.5,
                 leading=10.5
             )
             val_red = ParagraphStyle(
                 name='DetailValRedBold_PC',
                 parent=val_red,
-                fontSize=10,
+                fontSize=8.5,
                 leading=10.5,
                 textColor=colors.red
             )
@@ -1155,7 +1173,7 @@ class ProfessionalPDFGenerator:
         total_w = self._content_width_pts()
         left_pad = 22 * mm; gutter = 20 * mm; img_w = 53 * mm
         spec_w   = total_w - (left_pad + img_w + gutter)
-        return self.create_standard_spec_block(product_data, container_h, row_h, img_w, spec_w, detail_limit=6,
+        return self.create_standard_spec_block(product_data, container_h, row_h, img_w, spec_w, detail_limit=7,
                                    gutter=gutter, left_pad=left_pad, img_height_cap=0.75)
 
     # ---------- 1WP ----------
@@ -1260,9 +1278,9 @@ class ProfessionalPDFGenerator:
         # Header image (top banner)
         header_img_url  = self.get_best_image(imgs0)
         header_img_path = self.download_image(header_img_url) if header_img_url else None
-        header_img_h = 48 * mm
+        header_img_h = 45 * mm
         elements.append(self.create_safe_image_box(header_img_path, total_w_pts, header_img_h, height_cap=1.0, empty_placeholder=True))
-        elements.append(Spacer(1, 10 * mm))
+        elements.append(Spacer(1, 5 * mm))
 
         # Build columns: regular + packing + price (skip weight/packing dimension)
         packing, price, regular = set(), set(), set()
