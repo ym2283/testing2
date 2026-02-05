@@ -5,35 +5,37 @@ on:
   repository_dispatch:
     types: [generate_pdf]
 
+permissions:
+  contents: write   # 🔑 THIS FIXES THE 403
+
 jobs:
   run:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout repo
-      uses: actions/checkout@v4
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
-    - name: Setup Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: "3.11"
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-    - name: Install Dependencies
-      run: |
-        pip install gspread google-api-python-client google-auth pandas requests reportlab
+      - name: Install Dependencies
+        run: |
+          pip install gspread google-api-python-client google-auth pandas requests reportlab
 
-    - name: Run PDF Generator
-      env:
-        GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
-        SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
-      run: python professional_pdf_generator.py
+      - name: Run PDF Generator
+        env:
+          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+        run: python professional_pdf_generator.py
 
-    # ✅ Upload PDF directly to GitHub Release
-    - name: Upload PDF to GitHub Release
-      uses: softprops/action-gh-release@v2
-      with:
-        tag_name: latest
-        name: Latest Catalog PDF
-        files: PROFESSIONAL_CATALOG.pdf
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload PDF to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest Catalog PDF
+          files: PROFESSIONAL_CATALOG.pdf
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
