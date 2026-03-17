@@ -563,19 +563,19 @@ class ProfessionalPDFGenerator:
             return None
 
     def create_safe_image_box(self, path, max_w, max_h, height_cap=0.75, is_new=False):
-        # Apply the height cap to the container
-        max_h = max_h * height_cap
-        icon_path = "/workspaces/testing2/newicon.png"
+            # Apply the height cap to the container
+            max_h = max_h * height_cap
+            icon_path = "/workspaces/testing2/newicon.png"
         
-        # Returns the new custom overlay flowable
-        return OverlayImageBox(
-            main_path=path, 
-            icon_path=icon_path, 
-            max_w=max_w, 
-            max_h=max_h, 
-            is_new=is_new,
-            icon_scale=0.15
-        )
+            # Returns the new custom overlay flowable
+            return OverlayImageBox(
+                main_path=path, 
+                icon_path=icon_path, 
+                max_w=max_w, 
+                max_h=max_h, 
+                is_new=is_new,
+                icon_scale=0.15
+            )
 
     def get_first_non_empty(self, row, keys):
         for k in keys:
