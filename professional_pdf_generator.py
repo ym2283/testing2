@@ -1,5 +1,5 @@
 # ============================================================
-#  PROFESSIONAL PDF GENERATOR — v7.2f
+#  PROFESSIONAL PDF GENERATOR — v7.3f
 #  - Adds TABLE2 (same as TABLE, but 2 items share 1 page: top + bottom)
 #  - Tightens <br> spacing (collapse multiple to single)
 #  - Ensures TABLE2 never renders via format-2/3/4 path
