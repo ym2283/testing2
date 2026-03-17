@@ -300,6 +300,42 @@ class PaddedBox(Flowable):
             y = (self.h - self.ch) / 2.0
         self.child.drawOn(self.canv, self.pad_l, y)
 
+class OverlayImageBox(Flowable):
+    """Draws a main image with an optional icon overlaid in the top-right corner."""
+    def __init__(self, main_path, icon_path, max_w, max_h, is_new=False, icon_scale=0.15):
+        super().__init__()
+        self.main_path = main_path
+        self.icon_path = icon_path
+        self.max_w = max_w
+        self.max_h = max_h
+        self.is_new = is_new
+        self.icon_scale = icon_scale
+        
+    def wrap(self, availWidth, availHeight):
+        return (self.max_w, self.max_h)
+
+    def draw(self):
+        canv = self.canv
+        # 1. Draw Main Image (centered within the box)
+        if self.main_path and os.path.exists(self.main_path):
+            img = Image(self.main_path)
+            # Use KeepInFrame logic to get proper scaling for the main image
+            k = KeepInFrame(self.max_w, self.max_h, [img], mode='shrink', vAlign='TOP')
+            k.drawOn(canv, 0, 0)
+
+        # 2. Draw "New" Icon Overlay if triggered
+        if self.is_new and self.icon_path and os.path.exists(self.icon_path):
+            icon_w = self.max_w * self.icon_scale
+            icon_h = icon_w # Keep it square
+            
+            # Position at top-right of the available image box
+            # Note: 0,0 is bottom-left in ReportLab canvas
+            icon_x = self.max_w - icon_w
+            icon_y = self.max_h - icon_h
+            
+            icon_img = Image(self.icon_path, width=icon_w, height=icon_h)
+            icon_img.drawOn(canv, icon_x, icon_y)
+
 # -------- INLINE ICON + TEXT FLOWABLE (for TABLE format) --------
 from reportlab.platypus import Flowable, Image, Paragraph
 
@@ -525,21 +561,20 @@ class ProfessionalPDFGenerator:
         except Exception:
             return None
 
-    def create_safe_image_box(self, path, max_w, max_h, height_cap=0.75, empty_placeholder=False):
+   def create_safe_image_box(self, path, max_w, max_h, height_cap=0.75, is_new=False):
+        # Apply the height cap to the container
         max_h = max_h * height_cap
-        if path and os.path.exists(path):
-            img = Image(path); img.hAlign = 'CENTER'
-            return KeepInFrame(max_w, max_h, [img], mode='shrink', vAlign='TOP')
-        if empty_placeholder:
-            return Table([['']], colWidths=[max_w], rowHeights=[max_h],
-                         style=TableStyle([('LEFTPADDING',(0,0),(-1,-1),0),
-                                           ('RIGHTPADDING',(0,0),(-1,-1),0),
-                                           ('TOPPADDING',  (0,0),(-1,-1),0),
-                                           ('BOTTOMPADDING',(0,0),(-1,-1),0)]))
-        ph = Paragraph("No Image", self.styles['DetailVal'])
-        return Table([[ph]], colWidths=[max_w], rowHeights=[max_h],
-                     style=TableStyle([('VALIGN',(0,0),(-1,-1),'MIDDLE'),
-                                       ('ALIGN',(0,0),(-1,-1),'CENTER')]))
+        icon_path = "/workspaces/testing2/newicon.png"
+        
+        # Returns the new custom overlay flowable
+        return OverlayImageBox(
+            main_path=path, 
+            icon_path=icon_path, 
+            max_w=max_w, 
+            max_h=max_h, 
+            is_new=is_new,
+            icon_scale=0.15
+        )
 
     def get_first_non_empty(self, row, keys):
         for k in keys:
@@ -1055,57 +1090,45 @@ class ProfessionalPDFGenerator:
 
 
     # ---------- product block for 2/3/4 ----------
-    def _product_block(self, product_data, container_h, row_h, img_w, spec_w, detail_limit,
-                   gutter=0, left_pad=0, img_height_cap=0.75, key_w_override=None):
+    def _product_block(self, product_data, container_h, row_h, img_w, spec_w, detail_limit, gutter=0, left_pad=0, img_height_cap=0.75, key_w_override=None):
         elems = []
-        raw = product_data['raw']; res = product_data['resolved']; imgs = product_data['images']
+        raw = product_data['raw']
+        res = product_data['resolved']
+        imgs = product_data['images']
+        
+        # --- NEW ICON LOGIC ---
+        # Check Column G (named 'New') - if it has any content, set is_new to True
+        is_new_status = _s(res.get('New', '')) != "" 
+        
         name = self.get_first_non_empty(res, ['Item Name','Title','Product Name']) or 'UNKNOWN PRODUCT'
-
         elems.append(self.create_item_name_with_line(name))
         elems.append(Spacer(1, 8 * mm))
-
+        
         main_url = self.get_best_image(imgs)
         main_path = self.download_image(main_url) if main_url else None
-        image_box = self.create_safe_image_box(main_path, img_w, row_h, height_cap=img_height_cap)
-
+        
+        # Pass the is_new_status to the image box
+        image_box = self.create_safe_image_box(
+            main_path, 
+            img_w, 
+            row_h, 
+            height_cap=img_height_cap, 
+            is_new=is_new_status
+        )
+        
         spec_card = self.build_specifications_card(raw, res, detail_limit, spec_w, row_h, key_w_override=key_w_override)
         spec_card_box = self.fixed_box(spec_card, spec_w, row_h)
-
-        spec_cell = Table([[spec_card_box]], colWidths=[spec_w], rowHeights=[row_h])
-        spec_cell.setStyle(TableStyle([
-            ('LEFTPADDING',   (0,0), (-1,-1), 0),
-            ('RIGHTPADDING',  (0,0), (-1,-1), 0),
-            ('TOPPADDING',    (0,0), (-1,-1), -5),
-            ('BOTTOMPADDING', (0,0), (-1,-1), 0),
-            ('VALIGN',        (0,0), (-1,-1), 'TOP'),
-        ]))
-
-        row_cells, col_w = [], []
-        if left_pad > 0:
-            row_cells.append(''); col_w.append(left_pad)
-        row_cells.append(image_box); col_w.append(img_w)
-        row_cells.append('');        col_w.append(gutter)
-        row_cells.append(spec_cell); col_w.append(spec_w)
-
-        row = Table([row_cells], colWidths=col_w, rowHeights=[row_h])
-        row.setStyle(TableStyle([
+        
+        # Render the side-by-side layout (Image Left, Details Right)
+        row_data = [[image_box, spec_card_box]]
+        t = Table(row_data, colWidths=[img_w + gutter, spec_w], rowHeights=[row_h])
+        t.setStyle(TableStyle([
             ('VALIGN', (0,0), (-1,-1), 'TOP'),
-            ('LEFTPADDING',   (0,0), (-1,-1), 0),
-            ('RIGHTPADDING',  (0,0), (-1,-1), 0),
-            ('TOPPADDING',    (0,0), (-1,-1), 0),
-            ('BOTTOMPADDING', (0,0), (-1,-1), 0),
+            ('LEFTPADDING', (0,0), (-1,-1), left_pad),
+            ('RIGHTPADDING', (0,0), (-1,-1), 0),
         ]))
-        elems.append(row)
-
-        wrapper = Table([[elems]], colWidths=[sum(col_w)], rowHeights=[container_h])
-        wrapper.setStyle(TableStyle([
-            ('VALIGN', (0,0), (-1,-1), 'TOP'),
-            ('LEFTPADDING',   (0,0), (-1,-1), 0),
-            ('RIGHTPADDING',  (0,0), (-1,-1), 0),
-            ('TOPPADDING',    (0,0), (-1,-1), 0),
-            ('BOTTOMPADDING', (0,0), (-1,-1), 0),
-        ]))
-        return [wrapper]
+        elems.append(t)
+        return elems
     
     def create_standard_spec_block(self, product_data, container_h, row_h,
                                    img_w, spec_w, detail_limit, gutter=0,
