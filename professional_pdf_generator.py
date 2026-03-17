@@ -301,7 +301,7 @@ class PaddedBox(Flowable):
         self.child.drawOn(self.canv, self.pad_l, y)
 
 class OverlayImageBox(Flowable):
-    """Draws a main image with an optional icon overlaid in the top-right corner."""
+    """Draws a main image with an optional 'New' icon overlaid in the top-right corner."""
     def __init__(self, main_path, icon_path, max_w, max_h, is_new=False, icon_scale=0.15):
         super().__init__()
         self.main_path = main_path
@@ -316,23 +316,24 @@ class OverlayImageBox(Flowable):
 
     def draw(self):
         canv = self.canv
-        # 1. Draw Main Image (centered within the box)
+        # 1. Draw the Main Product Image
         if self.main_path and os.path.exists(self.main_path):
             img = Image(self.main_path)
-            # Use KeepInFrame logic to get proper scaling for the main image
+            # Use KeepInFrame to ensure the main image scales correctly within the box
             k = KeepInFrame(self.max_w, self.max_h, [img], mode='shrink', vAlign='TOP')
             k.drawOn(canv, 0, 0)
 
-        # 2. Draw "New" Icon Overlay if triggered
+        # 2. Draw the 'New' Icon Overlay if the trigger is active
         if self.is_new and self.icon_path and os.path.exists(self.icon_path):
+            # Calculate 15% scale based on the width of the image container
             icon_w = self.max_w * self.icon_scale
-            icon_h = icon_w # Keep it square
+            icon_h = icon_w  # Keep the icon square
             
-            # Position at top-right of the available image box
-            # Note: 0,0 is bottom-left in ReportLab canvas
+            # Position at top-right (0,0 is bottom-left in ReportLab)
             icon_x = self.max_w - icon_w
             icon_y = self.max_h - icon_h
             
+            # Draw the icon on the top layer
             icon_img = Image(self.icon_path, width=icon_w, height=icon_h)
             icon_img.drawOn(canv, icon_x, icon_y)
 
@@ -561,7 +562,7 @@ class ProfessionalPDFGenerator:
         except Exception:
             return None
 
-   def create_safe_image_box(self, path, max_w, max_h, height_cap=0.75, is_new=False):
+    def create_safe_image_box(self, path, max_w, max_h, height_cap=0.75, is_new=False):
         # Apply the height cap to the container
         max_h = max_h * height_cap
         icon_path = "/workspaces/testing2/newicon.png"
