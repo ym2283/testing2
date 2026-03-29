@@ -9,7 +9,6 @@ permissions:
   contents: write
 
 env:
-  # 🚀 Forces the runner to use Node.js 24 to avoid deprecation warnings
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
@@ -18,10 +17,10 @@ jobs:
 
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v5 # Updated from v4
+        uses: actions/checkout@v5
 
       - name: Setup Python
-        uses: actions/setup-python@v6 # Updated from v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
@@ -29,17 +28,58 @@ jobs:
         run: |
           pip install gspread google-api-python-client google-auth pandas requests reportlab PyPDF2
 
-      - name: Run PDF Generator
+      # ===============================
+      # 🔍 Decide which script to run
+      # ===============================
+      - name: Decide which script to run
+        id: decide
+        env:
+          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+        run: |
+          RESULT=$(python -c "
+import gspread, json, os
+
+creds=json.loads(os.environ['GOOGLE_CREDENTIALS_JSON'])
+gc=gspread.service_account_from_dict(creds)
+
+sheet=gc.open_by_key(os.environ['SPREADSHEET_ID']).sheet1
+
+print(sheet.acell('A1').value)
+")
+
+          echo "result=$RESULT" >> $GITHUB_OUTPUT
+
+      # ===============================
+      # 📄 Run MAIN PDF generator
+      # ===============================
+      - name: Run Main PDF Generator
+        if: steps.decide.outputs.result == 'main'
         env:
           GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
           SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
         run: python professional_pdf_generator.py
 
+      # ===============================
+      # 📄 Run DISCON PDF generator
+      # ===============================
+      - name: Run Discon PDF Generator
+        if: steps.decide.outputs.result == 'discon'
+        env:
+          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+        run: python discon_script.py
+
+      # ===============================
+      # 📦 Upload output PDF
+      # ===============================
       - name: Upload PDF to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
           name: Latest Catalog PDF
-          files: PROFESSIONAL_CATALOG.pdf
+          files: |
+            PROFESSIONAL_CATALOG.pdf
+            PROFESSIONAL_CATALOG_DISCON.pdf
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
