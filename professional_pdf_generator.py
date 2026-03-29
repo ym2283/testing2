@@ -749,8 +749,8 @@ class ProfessionalPDFGenerator:
         canv.line(10 * mm, line_y, 200 * mm, line_y)
         
         # Logo Paths
-        logo_lsk = "/workspaces/testing2/LSK Logo.png"
-        logo_deli = "/workspaces/testing2/Deli Logo (Red).png"
+        logo_lsk = "LSK Logo.png"
+        logo_deli = "Deli Logo (Red).png"
         
         icon_h = 4 * mm 
         current_x = margin_x
