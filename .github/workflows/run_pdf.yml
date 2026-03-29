@@ -2,19 +2,23 @@ name: Generate PDF From Google Sheets
 
 on:
   workflow_dispatch:
-  repository_dispatch:
-    types: [generate_pdf]
+    inputs:
+      target_script:
+        description: 'Which PDF to generate?'
+        required: true
+        default: 'both'
+        type: choice
+        options:
+          - main
+          - discount
+          - both
 
 permissions:
   contents: write
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 jobs:
   run:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repo
         uses: actions/checkout@v5
@@ -25,55 +29,25 @@ jobs:
           python-version: "3.11"
 
       - name: Install Dependencies
-        run: |
-          pip install gspread google-api-python-client google-auth pandas requests reportlab PyPDF2
+        run: pip install gspread google-api-python-client google-auth pandas requests reportlab PyPDF2
 
-      # ===============================
-      # 🔍 Decide which script to run
-      # ===============================
-      - name: Decide which script to run
-        id: decide
-        env:
-          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
-          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
-        run: |
-          RESULT=$(python -c "
-import gspread, json, os
-
-creds=json.loads(os.environ['GOOGLE_CREDENTIALS_JSON'])
-gc=gspread.service_account_from_dict(creds)
-
-sheet=gc.open_by_key(os.environ['SPREADSHEET_ID']).sheet1
-
-print(sheet.acell('A1').value)
-")
-
-          echo "result=$RESULT" >> $GITHUB_OUTPUT
-
-      # ===============================
-      # 📄 Run MAIN PDF generator
-      # ===============================
+      # Run Main Script if 'main' or 'both' is selected
       - name: Run Main PDF Generator
-        if: steps.decide.outputs.result == 'main'
+        if: github.event.inputs.target_script == 'main' || github.event.inputs.target_script == 'both'
         env:
           GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
           SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
         run: python professional_pdf_generator.py
 
-      # ===============================
-      # 📄 Run DISCON PDF generator
-      # ===============================
-      - name: Run Discon PDF Generator
-        if: steps.decide.outputs.result == 'discon'
+      # Run Discount Script if 'discount' or 'both' is selected
+      - name: Run Discounted PDF Generator
+        if: github.event.inputs.target_script == 'discount' || github.event.inputs.target_script == 'both'
         env:
           GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
           SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
         run: python discon_script.py
 
-      # ===============================
-      # 📦 Upload output PDF
-      # ===============================
-      - name: Upload PDF to GitHub Release
+      - name: Upload PDFs to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
@@ -81,5 +55,6 @@ print(sheet.acell('A1').value)
           files: |
             PROFESSIONAL_CATALOG.pdf
             PROFESSIONAL_CATALOG_DISCON.pdf
+          fail_on_unmatched_files: false # Prevents error if only 1 file exists
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
