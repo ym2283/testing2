@@ -1,24 +1,19 @@
 name: Generate PDF From Google Sheets
 
 on:
-  workflow_dispatch:
-    inputs:
-      target_script:
-        description: 'Which PDF to generate?'
-        required: true
-        default: 'both'
-        type: choice
-        options:
-          - main
-          - discount
-          - both
+  repository_dispatch:
+    types: [generate_pdf]
 
 permissions:
   contents: write
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   run:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v5
@@ -29,19 +24,20 @@ jobs:
           python-version: "3.11"
 
       - name: Install Dependencies
-        run: pip install gspread google-api-python-client google-auth pandas requests reportlab PyPDF2
+        run: |
+          pip install gspread google-api-python-client google-auth pandas requests reportlab PyPDF2
 
-      # Run Main Script if 'main' or 'both' is selected
+      # --- Logic for Main Catalog ---
       - name: Run Main PDF Generator
-        if: github.event.inputs.target_script == 'main' || github.event.inputs.target_script == 'both'
+        if: github.event.client_payload.type != 'discon'
         env:
           GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
           SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
         run: python professional_pdf_generator.py
 
-      # Run Discount Script if 'discount' or 'both' is selected
+      # --- Logic for Discounted Catalog ---
       - name: Run Discounted PDF Generator
-        if: github.event.inputs.target_script == 'discount' || github.event.inputs.target_script == 'both'
+        if: github.event.client_payload.type == 'discon'
         env:
           GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
           SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
@@ -52,9 +48,10 @@ jobs:
         with:
           tag_name: latest
           name: Latest Catalog PDF
+          # We list both; it will upload whichever one was generated in this run
           files: |
             PROFESSIONAL_CATALOG.pdf
             PROFESSIONAL_CATALOG_DISCON.pdf
-          fail_on_unmatched_files: false # Prevents error if only 1 file exists
+          fail_on_unmatched_files: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
