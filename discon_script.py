@@ -1,9 +1,10 @@
 # ============================================================
-#  PROFESSIONAL PDF GENERATOR — v7.3f
+#  PROFESSIONAL PDF GENERATOR — v7.2f
 #  - Adds TABLE2 (same as TABLE, but 2 items share 1 page: top + bottom)
 #  - Tightens <br> spacing (collapse multiple to single)
 #  - Ensures TABLE2 never renders via format-2/3/4 path
 #  - Subcategory header at top as usual
+#  - FIXED: NEW icon detection for all formats
 # ============================================================
 
 import gspread
@@ -34,7 +35,12 @@ from reportlab.lib.styles import ParagraphStyle
 import re, html
 from googleapiclient.http import MediaFileUpload
 from reportlab.pdfbase import pdfmetrics
-
+from reportlab.lib.utils import ImageReader
+from reportlab.platypus import Table, TableStyle, Image, KeepInFrame, Paragraph
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet
+import os
+from PyPDF2 import PdfReader, PdfWriter
 # ---------- helpers ----------
 def _mm(v): return v * mm
 PAGE_W_MM, PAGE_H_MM = 210, 297
@@ -48,6 +54,20 @@ def _norm(fmt: Optional[str]) -> str:
     if f == '3A': return '3'
     if f == '4A': return '4'
     return '2'
+
+def remove_last_page(pdf_path):
+    reader = PdfReader(pdf_path)
+    writer = PdfWriter()
+
+    total_pages = len(reader.pages)
+
+    # Copy all except last page
+    for i in range(total_pages - 1):
+        writer.add_page(reader.pages[i])
+
+    # Overwrite original file
+    with open(pdf_path, "wb") as f:
+        writer.write(f)
 
 def detect_shape_from_span(text: str) -> str:
     if not text:
@@ -300,43 +320,6 @@ class PaddedBox(Flowable):
             y = (self.h - self.ch) / 2.0
         self.child.drawOn(self.canv, self.pad_l, y)
 
-class OverlayImageBox(Flowable):
-    """Draws a main image with an optional 'New' icon overlaid in the top-right corner."""
-    def __init__(self, main_path, icon_path, max_w, max_h, is_new=False, icon_scale=0.15):
-        super().__init__()
-        self.main_path = main_path
-        self.icon_path = icon_path
-        self.max_w = max_w
-        self.max_h = max_h
-        self.is_new = is_new
-        self.icon_scale = icon_scale
-        
-    def wrap(self, availWidth, availHeight):
-        return (self.max_w, self.max_h)
-
-    def draw(self):
-        canv = self.canv
-        # 1. Draw the Main Product Image
-        if self.main_path and os.path.exists(self.main_path):
-            img = Image(self.main_path)
-            # Use KeepInFrame to ensure the main image scales correctly within the box
-            k = KeepInFrame(self.max_w, self.max_h, [img], mode='shrink', vAlign='TOP')
-            k.drawOn(canv, 0, 0)
-
-        # 2. Draw the 'New' Icon Overlay if the trigger is active
-        if self.is_new and self.icon_path and os.path.exists(self.icon_path):
-            # Calculate 15% scale based on the width of the image container
-            icon_w = self.max_w * self.icon_scale
-            icon_h = icon_w  # Keep the icon square
-            
-            # Position at top-right (0,0 is bottom-left in ReportLab)
-            icon_x = self.max_w - icon_w
-            icon_y = self.max_h - icon_h
-            
-            # Draw the icon on the top layer
-            icon_img = Image(self.icon_path, width=icon_w, height=icon_h)
-            icon_img.drawOn(canv, icon_x, icon_y)
-
 # -------- INLINE ICON + TEXT FLOWABLE (for TABLE format) --------
 from reportlab.platypus import Flowable, Image, Paragraph
 
@@ -360,7 +343,6 @@ class InlineImageText(Flowable):
         self.img.drawOn(self.canv, 0, 0)
         # Draw text beside it
         self.txt.drawOn(self.canv, self.img_width + 2, 0)
-
 
 
 # ----------------------------- main class -----------------------------
@@ -562,20 +544,116 @@ class ProfessionalPDFGenerator:
         except Exception:
             return None
 
-    def create_safe_image_box(self, path, max_w, max_h, height_cap=0.75, is_new=False):
-        # Apply the height cap to the container
-        max_h = max_h * height_cap
-        icon_path = "/workspaces/testing2/newicon.png"
-    
-        # Returns the new custom overlay flowable
-        return OverlayImageBox(
-            main_path=path, 
-            icon_path=icon_path, 
-            max_w=max_w, 
-            max_h=max_h, 
-            is_new=is_new,
-            icon_scale=0.15
-        )
+    def create_safe_image_box(self, path, max_w, max_h, height_cap=0.75, is_new=False, 
+                            format_type='2', **kwargs):
+        """
+        Create an image box with optional NEW icon overlay.
+        
+        Format-specific positioning:
+        - '2': format 2 positioning
+        - '3': format 3 positioning  
+        - '4': format 4 positioning
+        - '1WP': 1WP positioning
+        - 'TABLE': TABLE positioning
+        - 'TABLE2': TABLE2 positioning
+        """
+        styles = getSampleStyleSheet()
+        applied_max_h = max_h * height_cap
+
+        # 1. MAIN IMAGE
+        if path and isinstance(path, (str, bytes, os.PathLike)) and os.path.exists(path):
+            img = Image(path)
+            img.hAlign = 'CENTER'
+        else:
+            img = Paragraph("No Image", styles['Normal'])
+
+        img_box = KeepInFrame(max_w, applied_max_h, [img], mode='shrink', vAlign='MIDDLE')
+
+        if not is_new:
+            return img_box
+
+        # 2. FIND ICON
+        possible_paths = ["/workspaces/testing2/newicon.png", "newicon.png", "./newicon.png"]
+        icon_path = next((p for p in possible_paths if os.path.exists(p)), None)
+
+        # 3. CREATE OVERLAY WITH FORMAT-SPECIFIC POSITIONING
+        if icon_path:
+            icon = Image(icon_path, width=55, height=32)
+            
+            # Format-specific positioning adjustments
+            if format_type == '2':
+                # Format 2 positioning
+                left_padding = -20  # Push item LEFT/RIGHT
+                top_padding = 0     # Push item UP/DOWN
+                icon_left = -50     # Icon horizontal position
+                icon_top = -10      # Icon vertical position
+                
+            elif format_type == '3':
+                # Format 3 positioning
+                left_padding = -20
+                top_padding = 0
+                icon_left = -10
+                icon_top = -10
+                
+            elif format_type == '4':
+                # Format 4 positioning
+                left_padding = -20
+                top_padding = 0
+                icon_left = -10
+                icon_top = -10
+                
+            elif format_type == '1WP':
+                # 1WP positioning
+                left_padding = -20
+                top_padding = 0
+                icon_left = -50
+                icon_top = -10
+                
+            elif format_type in ['TABLE', 'TABLE2']:
+                # TABLE/TABLE2 positioning
+                left_padding = -20
+                top_padding = 10
+                icon_left = -60
+                icon_top = -25
+                
+            else:
+                # Default positioning
+                left_padding = -30
+                top_padding = 0
+                icon_left = -40
+                icon_top = -10
+            
+            # Using [max_w, 0] ensures the main image takes the full space for centering
+            table = Table(
+                [[img_box, icon]],
+                colWidths=[max_w, 0], 
+                rowHeights=[applied_max_h]
+            )
+
+            table.setStyle(TableStyle([
+                # --- ADJUST THE PRODUCT IMAGE (THE ITEM) HERE ---
+                ('ALIGN', (0, 0), (0, 0), 'CENTER'),
+                ('VALIGN', (0, 0), (0, 0), 'MIDDLE'),
+                
+                # PUSH ITEM LEFT OR RIGHT:
+                ('LEFTPADDING', (0, 0), (0, 0), left_padding), 
+
+                # PUSH ITEM UP OR DOWN:
+                ('TOPPADDING', (0, 0), (0, 0), top_padding), 
+                
+                # --- ICON CONTROLS ---
+                ('ALIGN', (1, 0), (1, 0), 'LEFT'),
+                ('VALIGN', (1, 0), (1, 0), 'TOP'),
+                ('LEFTPADDING', (1, 0), (1, 0), icon_left),  # Pulls icon onto the image
+                ('TOPPADDING', (1, 0), (1, 0), icon_top),
+                
+                # RESET DEFAULT PADDINGS
+                ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
+            ]))
+            return table
+        
+        return img_box
 
     def get_first_non_empty(self, row, keys):
         for k in keys:
@@ -655,16 +733,59 @@ class ProfessionalPDFGenerator:
         if getattr(self, "_hide_footer_for_page", False):
             self._hide_footer_for_page = False
             return
+        
         canv.saveState()
+        
+        # --- ADJUSTMENTS START HERE ---
         footer_text_y = 3.3 * mm
-        line_y        = 9.0  * mm
-        canv.setStrokeColor(colors.black); canv.setLineWidth(1.0)
+        line_y        = 9.0 * mm
+        
+        # 1. SHIFT TO LEFT: Reduced from 15mm to 10mm to move closer to the edge
+        margin_x      = 10 * mm 
+        
+        # 2. DRAW TOP LINE
+        canv.setStrokeColor(colors.black)
+        canv.setLineWidth(1.0)
         canv.line(10 * mm, line_y, 200 * mm, line_y)
+        
+        # Logo Paths
+        logo_lsk = "LSK Logo.png"
+        logo_deli = "Deli Logo (Red).png"
+        
+        icon_h = 4 * mm 
+        current_x = margin_x
+        
+        from reportlab.lib.utils import ImageReader
+
+        # DRAW LSK LOGO
+        if os.path.exists(logo_lsk):
+            img = ImageReader(logo_lsk)
+            iw, ih = img.getSize()
+            aspect = iw / float(ih)
+            icon_w = icon_h * aspect
+            canv.drawImage(logo_lsk, current_x, footer_text_y - 1*mm, width=icon_w, height=icon_h, mask='auto')
+            current_x += icon_w + 3*mm # Added a bit more gap before the bar
+            
+        # 3. MAKE "|" LONGER AND POSITIONED
+        # We increase font size to 14 to make it "longer" (taller)
+        canv.setFont("Helvetica", 14) 
+        # Nudge y down slightly (-0.5mm) so the longer bar stays centered vertically
+        canv.drawString(current_x, footer_text_y - 0.5*mm, "|")
+        current_x += 4*mm
+        
+        # DRAW DELI LOGO
+        if os.path.exists(logo_deli):
+            img = ImageReader(logo_deli)
+            iw, ih = img.getSize()
+            aspect = iw / float(ih)
+            icon_w = icon_h * aspect
+            canv.drawImage(logo_deli, current_x, footer_text_y - 1*mm, width=icon_w, height=icon_h, mask='auto')
+
+        # 4. REST OF FOOTER (Subcategory & Page)
         canv.setFont(self.styles['Footer'].fontName, 9)
-        left_text = self.get_first_non_empty(raw_data, ['Footer Left','Company','Brand']) or 'LSK Hardware Trading Sdn Bhd'
-        canv.drawString(15 * mm, footer_text_y, left_text)
         canv.drawCentredString(105 * mm, footer_text_y, (subcategory_upper or ''))
         canv.drawRightString(195 * mm, footer_text_y, str(doc.page))
+        
         canv.restoreState()
 
     # ---------- size math ----------
@@ -1089,62 +1210,123 @@ class ProfessionalPDFGenerator:
 
         return outer
 
+    # ---------- HELPER: Check if item is NEW ----------
+    def _is_item_new(self, raw_data):
+        """Helper method to check if an item is marked as NEW."""
+        if 'New' in raw_data:
+            new_val = raw_data['New']
+            if new_val == 1 or new_val == '1' or str(new_val).strip() == '1':
+                return True
+        else:
+            # Try case-insensitive search
+            for k, v in raw_data.items():
+                if str(k).strip().lower() == 'new':
+                    if v == 1 or v == '1' or str(v).strip() == '1':
+                        return True
+        return False
 
     # ---------- product block for 2/3/4 ----------
-    def _product_block(self, product_data, container_h, row_h, img_w, spec_w, detail_limit, gutter=0, left_pad=0, img_height_cap=0.75, key_w_override=None):
+    def _product_block(self, product_data, container_h, row_h, img_w, spec_w, detail_limit, 
+                    gutter=0, left_pad=0, img_height_cap=0.75, key_w_override=None, format_type='2'):
         elems = []
-        raw = product_data['raw']
         res = product_data['resolved']
-        imgs = product_data['images']
+        raw = product_data['raw']
         
-        # --- NEW ICON LOGIC ---
-        # Check Column G (named 'New') - if it has any content, set is_new to True
-        is_new_status = _s(res.get('New', '')) != "" 
+        # Get item name
+        item_name = res.get('Item Name', 'Unknown')
+        if not item_name or item_name == 'Unknown':
+            item_name = raw.get('Item Name', 'Unknown')
         
-        name = self.get_first_non_empty(res, ['Item Name','Title','Product Name']) or 'UNKNOWN PRODUCT'
-        elems.append(self.create_item_name_with_line(name))
-        elems.append(Spacer(1, 8 * mm))
+        # CHECK FOR NEW COLUMN
+        is_new_item = self._is_item_new(raw)
         
-        main_url = self.get_best_image(imgs)
+        if is_new_item:
+            print(f"✅ _product_block: Item '{item_name}' is NEW! (Format: {format_type})")
+        
+        # Get main image
+        main_url = self.get_best_image(product_data['images'])
         main_path = self.download_image(main_url) if main_url else None
         
-        # Pass the is_new_status to the image box
+        # Create image box with NEW overlay flag AND format type
         image_box = self.create_safe_image_box(
             main_path, 
             img_w, 
             row_h, 
             height_cap=img_height_cap, 
-            is_new=is_new_status
+            is_new=is_new_item,
+            format_type=format_type  # 👈 PASS FORMAT TYPE
         )
         
+        # Build specs card
         spec_card = self.build_specifications_card(raw, res, detail_limit, spec_w, row_h, key_w_override=key_w_override)
         spec_card_box = self.fixed_box(spec_card, spec_w, row_h)
         
-        # Render the side-by-side layout (Image Left, Details Right)
-        row_data = [[image_box, spec_card_box]]
-        t = Table(row_data, colWidths=[img_w + gutter, spec_w], rowHeights=[row_h])
+        spec_cell = Table([[spec_card_box]], colWidths=[spec_w], rowHeights=[row_h])
+        spec_cell.setStyle(TableStyle([
+            ('LEFTPADDING', (0,0), (-1,-1), 0),
+            ('RIGHTPADDING', (0,0), (-1,-1), 0),
+            ('TOPPADDING', (0,0), (-1,-1), -5),
+            ('VALIGN', (0,0), (-1,-1), 'TOP'),
+        ]))
+        
+        # Layout assembly
+        row_cells = []
+        col_w = []
+        if left_pad > 0:
+            row_cells.append(''); col_w.append(left_pad)
+        
+        row_cells.append(image_box); col_w.append(img_w)
+        row_cells.append(''); col_w.append(gutter)
+        row_cells.append(spec_cell); col_w.append(spec_w)
+        
+        t = Table([row_cells], colWidths=col_w, rowHeights=[row_h])
         t.setStyle(TableStyle([
             ('VALIGN', (0,0), (-1,-1), 'TOP'),
-            ('LEFTPADDING', (0,0), (-1,-1), left_pad),
+            ('LEFTPADDING', (0,0), (-1,-1), 0),
             ('RIGHTPADDING', (0,0), (-1,-1), 0),
+            ('TOPPADDING', (0,0), (-1,-1), 0),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 0),
         ]))
         elems.append(t)
-        return elems
-    
+        
+        # Container to lock height
+        wrapper = Table([[elems]], colWidths=[sum(col_w)], rowHeights=[container_h])
+        wrapper.setStyle(TableStyle([
+            ('VALIGN', (0,0), (-1,-1), 'TOP'),
+            ('LEFTPADDING', (0,0), (-1,-1), 0),
+            ('RIGHTPADDING', (0,0), (-1,-1), 0),
+            ('TOPPADDING', (0,0), (-1,-1), 0),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 0),
+        ]))
+        
+        return [wrapper]
+        
     def create_standard_spec_block(self, product_data, container_h, row_h,
-                                   img_w, spec_w, detail_limit, gutter=0,
-                                   left_pad=0, img_height_cap=0.9,
-                                   key_w_override=None):
+                                img_w, spec_w, detail_limit, gutter=0,
+                                left_pad=0, img_height_cap=0.9,
+                                key_w_override=None, format_type='2'):
         elems = []
-        raw = product_data['raw']; res = product_data['resolved']; imgs = product_data['images']
+        raw = product_data['raw']
+        res = product_data['resolved']
+        imgs = product_data['images']
         name = self.get_first_non_empty(res, ['Item Name','Title','Product Name']) or 'UNKNOWN PRODUCT'
+
+        # CHECK FOR NEW COLUMN
+        is_new_item = self._is_item_new(raw)
+        if is_new_item:
+            print(f"✅ create_standard_spec_block: Item '{name}' is NEW! (Format: {format_type})")
 
         elems.append(self.create_item_name_with_line(name))
         elems.append(Spacer(1, 8 * mm))
 
         main_url = self.get_best_image(imgs)
         main_path = self.download_image(main_url) if main_url else None
-        image_box = self.create_safe_image_box(main_path, img_w, row_h, height_cap=img_height_cap)
+        image_box = self.create_safe_image_box(
+            main_path, img_w, row_h, 
+            height_cap=img_height_cap,
+            is_new=is_new_item,
+            format_type=format_type  # 👈 PASS FORMAT TYPE
+        )
 
         spec_card = self.build_specifications_card(raw, res, detail_limit, spec_w, row_h,
                                                key_w_override=key_w_override)
@@ -1189,27 +1371,41 @@ class ProfessionalPDFGenerator:
         total_w = self._content_width_pts()
         left_pad = 6 * mm; gutter = 5 * mm; img_w = 85 * mm
         spec_w   = total_w - (left_pad + img_w + gutter)
-        return self.create_standard_spec_block(product_data, container_h, row_h, img_w, spec_w, detail_limit=16,
-                                   gutter=gutter, left_pad=left_pad, img_height_cap=0.90, key_w_override=key_w_override)
+        return self.create_standard_spec_block(product_data, container_h, row_h, img_w, spec_w, 
+                                            detail_limit=16, gutter=gutter, left_pad=left_pad, 
+                                            img_height_cap=0.90, key_w_override=key_w_override,
+                                            format_type='2')  # 👈 ADD FORMAT TYPE
 
     def create_product_block_3(self, product_data, container_h, row_h, key_w_override=None):
         total_w = self._content_width_pts()
         left_pad = 23 * mm; gutter = 22 * mm; img_w = 50 * mm
         spec_w   = total_w - (left_pad + img_w + gutter)
-        return self.create_standard_spec_block(product_data, container_h, row_h, img_w, spec_w, detail_limit=10,
-                                   gutter=gutter, left_pad=left_pad, img_height_cap=0.85)
+        return self.create_standard_spec_block(product_data, container_h, row_h, img_w, spec_w, 
+                                            detail_limit=10, gutter=gutter, left_pad=left_pad, 
+                                            img_height_cap=0.85,
+                                            format_type='3')  # 👈 ADD FORMAT TYPE
 
     def create_product_block_4(self, product_data, container_h, row_h, key_w_override=None):
         total_w = self._content_width_pts()
         left_pad = 22 * mm; gutter = 20 * mm; img_w = 53 * mm
         spec_w   = total_w - (left_pad + img_w + gutter)
-        return self.create_standard_spec_block(product_data, container_h, row_h, img_w, spec_w, detail_limit=7,
-                                   gutter=gutter, left_pad=left_pad, img_height_cap=0.75)
-
+        return self.create_standard_spec_block(product_data, container_h, row_h, img_w, spec_w, 
+                                            detail_limit=7, gutter=gutter, left_pad=left_pad, 
+                                            img_height_cap=0.75,
+                                            format_type='4')  # 👈 ADD FORMAT TYPE
     # ---------- 1WP ----------
     def create_1wp_format(self, product_data):
         container_h, row_h, _gap = self._compute_layout(1, desired_gap_mm=0, boost_mm=4)
         total_w = self._content_width_pts()
+
+        raw = product_data['raw']
+        res = product_data['resolved']
+        name = self.get_first_non_empty(res, ['Item Name','Title','Product Name']) or 'UNKNOWN PRODUCT'
+
+        # CHECK FOR NEW COLUMN
+        is_new_item = self._is_item_new(raw)
+        if is_new_item:
+            print(f"✅ create_1wp_format: Item '{name}' is NEW!")
 
         graph_url  = self.get_graph_image(product_data['images'])
         graph_path = self.download_image(graph_url) if graph_url else None
@@ -1229,9 +1425,6 @@ class ProfessionalPDFGenerator:
         left_pad = 1 * mm; gutter = 1 * mm; img_w = 100 * mm
         spec_w   = total_w - (left_pad + img_w + gutter)
 
-        raw = product_data['raw']; res = product_data['resolved']
-        name = self.get_first_non_empty(res, ['Item Name','Title','Product Name']) or 'UNKNOWN PRODUCT'
-
         elems = []
         item_name = self.create_item_name_with_line(name)
         item_name_wrapper = Table([[item_name]], colWidths=[self._content_width_pts()])
@@ -1250,7 +1443,7 @@ class ProfessionalPDFGenerator:
         main_path = self.download_image(main_url) if main_url else None
         # Shift the image downward (adjust TOPPADDING as needed)
         image_box = Table(
-            [[self.create_safe_image_box(main_path, img_w, row_h, height_cap=0.40)]],
+            [[self.create_safe_image_box(main_path, img_w, row_h, height_cap=0.40, is_new=is_new_item, format_type='1WP')]],
             colWidths=[img_w],
             style=[
                 ('TOPPADDING', (0,0), (-1,-1), 8),  
@@ -1281,7 +1474,7 @@ class ProfessionalPDFGenerator:
         return elems
 
     # ---------- TABLE (one per page) ----------
-    def create_table_format(self, group_data):
+    def create_table_format(self, group_data, format_type='TABLE'):
         elements = []
         if not group_data:
             return elements
@@ -1290,6 +1483,15 @@ class ProfessionalPDFGenerator:
         res0 = first['resolved']
         imgs0 = first['images']
         name = self.get_first_non_empty(res0, ['Item Name', 'Title', 'Product Name']) or 'Unknown Product'
+
+        # DEBUG: Check for NEW items in this group
+        print(f"\n📋 TABLE FORMAT GROUP - Checking {len(group_data)} items for NEW flag:")
+        for idx, product in enumerate(group_data):
+            raw = product['raw']
+            item_name = product['resolved'].get('Item Name', raw.get('Item Name', 'Unknown'))
+            is_new = self._is_item_new(raw)
+            if is_new:
+                print(f"  ✅ Item {idx+1}: {item_name[:30]}... is NEW!")
 
         total_w_pts = self._content_width_pts()
 
@@ -1305,11 +1507,21 @@ class ProfessionalPDFGenerator:
         elements.append(item_name_wrapper)
         elements.append(Spacer(1, 10 * mm))
 
-        # Header image (top banner)
+        # Header image (top banner) - PASS FORMAT_TYPE HERE
         header_img_url  = self.get_best_image(imgs0)
         header_img_path = self.download_image(header_img_url) if header_img_url else None
         header_img_h = 45 * mm
-        elements.append(self.create_safe_image_box(header_img_path, total_w_pts, header_img_h, height_cap=1.0, empty_placeholder=True))
+        # ✅ ADD THIS LINE
+        is_new_item = self._is_item_new(first['raw'])
+
+        elements.append(self.create_safe_image_box(
+            header_img_path,
+            total_w_pts,
+            header_img_h,
+            height_cap=1.0,
+            is_new=is_new_item,   # ✅ PASS THIS
+            format_type=format_type
+        ))
         elements.append(Spacer(1, 5 * mm))
 
         # Build columns: regular + packing + price (skip weight/packing dimension)
@@ -1412,12 +1624,11 @@ class ProfessionalPDFGenerator:
             style_cmds.insert(3, ('LINEBELOW', (0,1), (-1,-2), 0.4, colors.HexColor('#999999')))
 
         style_cmds += [
-            ('WORDWRAP', (0,0), (-1,-1), 'None'),   # disable wrapping
-            ('TRUNCATE', (0,0), (-1,-1), True),     # clip long text instead of wrapping
+            ('WORDWRAP', (0,0), (-1,-1), 'None'),   # disable wrapping    # clip long text instead of wrapping
             ('ALIGN', (0,0), (-1,-1), 'LEFT'),
             ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
         ]  
-          
+        
         t.setStyle(TableStyle(style_cmds))
 
         for row_idx in range(1, len(data)):  # skip header row
@@ -1457,7 +1668,6 @@ class ProfessionalPDFGenerator:
                 canv.restoreState()
         return [FullPageImage(path), PageBreak()]
 
-    # ---------- grouping helper (GroupID-aware pagination for 2/3/4) ----------
     # ---------- grouping helper (GroupID-aware pagination for 2/3/4) ----------
     def _paginate_groups(self, items: List[dict], per_page: int) -> List[List[dict]]:
         clusters: List[List[dict]] = []
@@ -1510,9 +1720,9 @@ class ProfessionalPDFGenerator:
             ts = datetime.now().strftime('%Y%m%d_%H%M%S')
             output_path = os.path.join(self.output_dir, f'professional_catalog_{ts}.pdf')
 
-        master_df   = self.get_sheet_data('Master')
-        resolved_df = self.get_sheet_data('Master_Resolved')
-        images_df   = self.get_sheet_data('Master_With_Images')
+        master_df   = self.get_sheet_data('Master_Discon')
+        resolved_df = self.get_sheet_data('Master_Discon_Resolved')
+        images_df   = self.get_sheet_data('Master_With_Images_Discon')
         remark_df   = self.get_sheet_data('Remark')
         if master_df.empty: raise Exception("Master sheet is empty")
 
@@ -1567,7 +1777,7 @@ class ProfessionalPDFGenerator:
         base_raw = merged[0]['raw'] if merged else {}
 
         # MAIN COVER (footer suppressed by flowable)
-        main_cover_url = remark_lookup.get('DELI CATALOGUE COVER')
+        main_cover_url = remark_lookup.get('DISCONTINUED PRODUCTS')
         if main_cover_url:
             story.extend(self.create_full_page_cover(main_cover_url))
 
@@ -1608,7 +1818,7 @@ class ProfessionalPDFGenerator:
                 story.append(SetSubcategoryForFooter(sub))
                 story.extend(self.create_subcategory_header(sub))
                 story.append(Spacer(1, _mm(self._header_band_mm - 11.5)))
-                story.extend(self.create_table_format(items))
+                story.extend(self.create_table_format(items, format_type='TABLE'))
                 i += 1
                 first_group = False
                 continue
@@ -1633,7 +1843,7 @@ class ProfessionalPDFGenerator:
                 # Try to render BOTTOM table (next Group ID) on the same page
                 if i + 1 < n and _same_section(g, groups[i + 1]):
                     story.append(Spacer(1, 14 * mm))
-                    story.extend(self.create_table_format(groups[i + 1]['rows']))
+                    story.extend(self.create_table_format(groups[i + 1]['rows'], format_type='TABLE2'))
                     used = 2
 
                 i += used
@@ -1711,6 +1921,7 @@ class ProfessionalPDFGenerator:
             first_group = False
 
         doc.build(story, canvasmaker=lambda *a, **k: FooterCanvas(*a, **k, generator=self, raw_data=base_raw, doc_ref=doc))        
+        remove_last_page(output_path)
         return output_path
 
     # ---------- data ----------
@@ -1737,7 +1948,7 @@ def main():
         gen = ProfessionalPDFGenerator(temp_creds.name, spreadsheet_id)
         out = gen.generate_professional_pdf()
         if out and os.path.exists(out):
-            shutil.copy2(out, "./PROFESSIONAL_CATALOG.pdf")
+            shutil.copy2(out, "./PROFESSIONAL_CATALOG_DISCON.pdf")
             print("DONE: PDF GENERATED")
     except Exception as e:
         print(f"❌ Error: {e}")
