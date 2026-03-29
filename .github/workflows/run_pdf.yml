@@ -27,7 +27,7 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          pip install gspread google-api-python-client google-auth pandas requests reportlab
+          pip install gspread google-api-python-client google-auth pandas requests reportlab PyPDF2
 
       - name: Run PDF Generator
         env:
