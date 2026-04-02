@@ -737,8 +737,8 @@ class ProfessionalPDFGenerator:
         canv.saveState()
         
         # --- ADJUSTMENTS START HERE ---
-        footer_text_y = 3.3 * mm
-        line_y        = 9.0 * mm
+        footer_text_y = 2.3 * mm
+        line_y        = 7.0 * mm
         
         # 1. SHIFT TO LEFT: Reduced from 15mm to 10mm to move closer to the edge
         margin_x      = 10 * mm 
