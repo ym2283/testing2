@@ -41,6 +41,7 @@ from reportlab.platypus import Table, TableStyle, Image, KeepInFrame, Paragraph
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet
 import os
+import zipfile
 from PyPDF2 import PdfReader, PdfWriter
 import fitz  # PyMuPDF -> pip install pymupdf   (used for PDF -> image export)
 # ---------- helpers ----------
@@ -411,6 +412,17 @@ class ProfessionalPDFGenerator:
             doc.close()
 
         return image_paths
+
+    def zip_images(self, image_paths: list, zip_path: str) -> str:
+        """
+        Bundles the given image files into a single zip at zip_path.
+        Returns zip_path.
+        """
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for p in image_paths:
+                zf.write(p, arcname=os.path.basename(p))
+        print(f"📦 Zipped {len(image_paths)} images -> {zip_path}")
+        return zip_path
 
     def __init__(self, credentials_path: str, spreadsheet_id: str):
         self._left_margin_mm, self._right_margin_mm = 5, 5
@@ -2004,20 +2016,20 @@ def main():
 
             # --- Convert the generated PDF into one PNG per page (300 DPI) ---
             image_paths = gen.convert_pdf_to_images(out, dpi=300)
-            local_image_dir = "./catalog_pages"
-            os.makedirs(local_image_dir, exist_ok=True)
-            for p in image_paths:
-                shutil.copy2(p, os.path.join(local_image_dir, os.path.basename(p)))
-            print(f"DONE: {len(image_paths)} PAGE IMAGES GENERATED -> {local_image_dir}")
 
-            # --- Upload PDF + page images to the same Drive folder ---
+            # --- Zip the pages and place the zip next to the PDF in the repo root ---
+            # so the same "files:" list in the release workflow can pick it up.
+            zip_name = "PROFESSIONAL_CATALOG_IMAGES.zip"
+            zip_path = os.path.join(".", zip_name)
+            gen.zip_images(image_paths, zip_path)
+            print(f"DONE: {len(image_paths)} PAGE IMAGES ZIPPED -> {zip_path}")
+
+            # --- Optional: also upload PDF + page images to a Google Drive folder ---
             drive_folder_id = os.getenv('DRIVE_FOLDER_ID')
             if drive_folder_id:
                 gen.upload_to_drive(out, drive_folder_id)
                 gen.upload_images_to_drive(image_paths, drive_folder_id)
                 print("DONE: PDF AND IMAGES UPLOADED TO DRIVE")
-            else:
-                print("⚠️  DRIVE_FOLDER_ID not set — skipping Drive upload of PDF/images")
     except Exception as e:
         print(f"❌ Error: {e}")
         import traceback; traceback.print_exc()
