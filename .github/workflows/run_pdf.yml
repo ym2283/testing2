@@ -1,32 +1,24 @@
 name: Generate PDF From Google Sheets
-
 on:
   repository_dispatch:
     types: [generate_pdf]
-
 permissions:
   contents: write
-
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 jobs:
   run:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repo
         uses: actions/checkout@v5
-
       - name: Setup Python
         uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-
       - name: Install Dependencies
         run: |
           pip install pymupdf gspread google-api-python-client google-auth pandas requests reportlab PyPDF2
-
       # --- Logic for Main Catalog ---
       - name: Run Main PDF Generator
         if: github.event.client_payload.type != 'discon'
@@ -34,7 +26,6 @@ jobs:
           GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
           SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
         run: python professional_pdf_generator.py
-
       # --- Logic for Discounted Catalog ---
       - name: Run Discounted PDF Generator
         if: github.event.client_payload.type == 'discon'
@@ -42,16 +33,17 @@ jobs:
           GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
           SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
         run: python discon_script.py
-
-      - name: Upload PDFs to GitHub Release
+      - name: Upload PDFs and Page Images to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
           name: Latest Catalog PDF
-          # We list both; it will upload whichever one was generated in this run
+          # We list all possible outputs; softprops only uploads whichever ones exist in this run
           files: |
             PROFESSIONAL_CATALOG.pdf
             PROFESSIONAL_CATALOG_DISCON.pdf
+            PROFESSIONAL_CATALOG_IMAGES.zip
+            PROFESSIONAL_CATALOG_DISCON_IMAGES.zip
           fail_on_unmatched_files: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
