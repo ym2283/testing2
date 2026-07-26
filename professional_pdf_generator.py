@@ -5,6 +5,7 @@
 #  - Ensures TABLE2 never renders via format-2/3/4 path
 #  - Subcategory header at top as usual
 #  - FIXED: NEW icon detection for all formats
+#  - ADDED: PDF -> per-page PNG export + Drive upload
 # ============================================================
 
 import gspread
@@ -41,6 +42,7 @@ from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet
 import os
 from PyPDF2 import PdfReader, PdfWriter
+import fitz  # PyMuPDF -> pip install pymupdf   (used for PDF -> image export)
 # ---------- helpers ----------
 def _mm(v): return v * mm
 PAGE_W_MM, PAGE_H_MM = 210, 297
@@ -360,6 +362,55 @@ class ProfessionalPDFGenerator:
         ).execute()
         print("Uploaded PDF to Google Drive with File ID:", uploaded.get('id'))
 
+    def upload_images_to_drive(self, image_paths: list, folder_id: str) -> list:
+        """
+        Uploads each PNG in image_paths to the given Drive folder.
+        Returns the list of uploaded file IDs, in the same order as image_paths.
+        """
+        uploaded_ids = []
+        for path in image_paths:
+            file_metadata = {
+                'name': os.path.basename(path),
+                'parents': [folder_id]
+            }
+            media = MediaFileUpload(path, mimetype='image/png')
+            uploaded = self.drive_service.files().create(
+                body=file_metadata,
+                media_body=media,
+                fields='id'
+            ).execute()
+            file_id = uploaded.get('id')
+            uploaded_ids.append(file_id)
+            print(f"☁️  Uploaded {os.path.basename(path)} -> Drive file ID: {file_id}")
+        return uploaded_ids
+
+    def convert_pdf_to_images(self, pdf_path: str, dpi: int = 300, out_dir: str = None) -> list:
+        """
+        Renders every page of pdf_path to a PNG at the given DPI using PyMuPDF.
+        Returns a list of saved image file paths, in page order.
+        """
+        if out_dir is None:
+            out_dir = os.path.join(self.output_dir, "images_export")
+        os.makedirs(out_dir, exist_ok=True)
+
+        base_name = os.path.splitext(os.path.basename(pdf_path))[0]
+        zoom = dpi / 72.0  # PDF points are 72/inch; scale render matrix to hit target DPI
+        matrix = fitz.Matrix(zoom, zoom)
+
+        image_paths = []
+        doc = fitz.open(pdf_path)
+        try:
+            for page_index in range(len(doc)):
+                page = doc.load_page(page_index)
+                pix = page.get_pixmap(matrix=matrix)
+                img_path = os.path.join(out_dir, f"{base_name}_page_{page_index + 1}.png")
+                pix.save(img_path)
+                image_paths.append(img_path)
+                print(f"🖼️  Saved page {page_index + 1} -> {img_path}")
+        finally:
+            doc.close()
+
+        return image_paths
 
     def __init__(self, credentials_path: str, spreadsheet_id: str):
         self._left_margin_mm, self._right_margin_mm = 5, 5
@@ -1950,6 +2001,23 @@ def main():
         if out and os.path.exists(out):
             shutil.copy2(out, "./PROFESSIONAL_CATALOG.pdf")
             print("DONE: PDF GENERATED")
+
+            # --- Convert the generated PDF into one PNG per page (300 DPI) ---
+            image_paths = gen.convert_pdf_to_images(out, dpi=300)
+            local_image_dir = "./catalog_pages"
+            os.makedirs(local_image_dir, exist_ok=True)
+            for p in image_paths:
+                shutil.copy2(p, os.path.join(local_image_dir, os.path.basename(p)))
+            print(f"DONE: {len(image_paths)} PAGE IMAGES GENERATED -> {local_image_dir}")
+
+            # --- Upload PDF + page images to the same Drive folder ---
+            drive_folder_id = os.getenv('DRIVE_FOLDER_ID')
+            if drive_folder_id:
+                gen.upload_to_drive(out, drive_folder_id)
+                gen.upload_images_to_drive(image_paths, drive_folder_id)
+                print("DONE: PDF AND IMAGES UPLOADED TO DRIVE")
+            else:
+                print("⚠️  DRIVE_FOLDER_ID not set — skipping Drive upload of PDF/images")
     except Exception as e:
         print(f"❌ Error: {e}")
         import traceback; traceback.print_exc()
