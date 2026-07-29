@@ -1948,7 +1948,7 @@ def main():
         gen = ProfessionalPDFGenerator(temp_creds.name, spreadsheet_id)
         out = gen.generate_professional_pdf()
         if out and os.path.exists(out):
-            shutil.copy2(out, "./PROFESSIONAL_CATALOG_DISCON.pdf")
+            shutil.copy2(out, "./Deli_Catalogue_Discontinued.pdf")
             print("DONE: PDF GENERATED")
     except Exception as e:
         print(f"❌ Error: {e}")
