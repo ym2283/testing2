@@ -2011,7 +2011,7 @@ def main():
         gen = ProfessionalPDFGenerator(temp_creds.name, spreadsheet_id)
         out = gen.generate_professional_pdf()
         if out and os.path.exists(out):
-            shutil.copy2(out, "./PROFESSIONAL_CATALOG.pdf")
+            shutil.copy2(out, "./Deli_Catalogue.pdf")
             print("DONE: PDF GENERATED")
 
             # --- Convert the generated PDF into one PNG per page (300 DPI) ---
@@ -2019,7 +2019,7 @@ def main():
 
             # --- Zip the pages and place the zip next to the PDF in the repo root ---
             # so the same "files:" list in the release workflow can pick it up.
-            zip_name = "PROFESSIONAL_CATALOG_IMAGES.zip"
+            zip_name = "Deli_Catalogue_JPEG.zip"
             zip_path = os.path.join(".", zip_name)
             gen.zip_images(image_paths, zip_path)
             print(f"DONE: {len(image_paths)} PAGE IMAGES ZIPPED -> {zip_path}")
