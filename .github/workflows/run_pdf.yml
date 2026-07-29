@@ -40,9 +40,9 @@ jobs:
           name: Latest Catalog PDF
           # We list all possible outputs; softprops only uploads whichever ones exist in this run
           files: |
-            PROFESSIONAL_CATALOG.pdf
-            PROFESSIONAL_CATALOG_DISCON.pdf
-            PROFESSIONAL_CATALOG_IMAGES.zip
+            Deli Catalogue.pdf
+            Deli Catalogue (Discontinued).pdf
+            Deli Catalogue JPEG.zip
             PROFESSIONAL_CATALOG_DISCON_IMAGES.zip
           fail_on_unmatched_files: false
         env:
